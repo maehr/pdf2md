@@ -1,5 +1,6 @@
 """Optional stdio MCP boundary for the local conversion pipeline."""
 
+import errno
 import logging
 import os
 import stat
@@ -26,6 +27,7 @@ _CONVERSION_LOCK = Lock()
 _LOGGER = logging.getLogger(__name__)
 _INSTALL_HELP = "Install the MCP extra with: uv sync --locked --extra mcp"
 _MAX_READ_BYTES = 65536
+_MAX_TTS_BYTES = 16 * 1024 * 1024
 _TTS_SUFFIX = ".tts.md"
 
 
@@ -200,12 +202,36 @@ def _read_chunk(
     return markdown, next_offset, next_offset == identity.size
 
 
+def _verify_published(root: _Root, published: _Published) -> None:
+    """Reject a conversion whose extracted Markdown changed or vanished."""
+    path = root.resolve(str(published.path))
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        raise ValueError(
+            "The Markdown result changed. Convert the PDF again."
+        ) from None
+    try:
+        identity = _FileIdentity.from_stat(os.fstat(descriptor))
+    finally:
+        os.close(descriptor)
+    if identity != published.identity:
+        raise ValueError("The Markdown result changed. Convert the PDF again.")
+
+
 def _write_tts(
-    root: _Root, published: _Published, markdown: str, overwrite: bool
+    root: _Root,
+    published: _Published,
+    markdown: str,
+    overwrite: bool,
+    reserved: set[Path],
 ) -> tuple[Path, int, bool]:
+    _verify_published(root, published)
     path = root.resolve(str(published.path.with_suffix(_TTS_SUFFIX)))
     if path == published.path:
         raise ValueError("The TTS copy cannot replace the extracted Markdown.")
+    if path in reserved:
+        raise ValueError("The TTS target is another conversion's extraction.")
     if not path.parent.is_dir():
         raise ValueError("The extraction output directory no longer exists.")
     if path.exists() and not path.is_file():
@@ -219,6 +245,10 @@ def _write_tts(
         data = markdown.encode("utf-8")
     except UnicodeEncodeError:
         raise ValueError("The Markdown text contains invalid Unicode.") from None
+    if len(data) > _MAX_TTS_BYTES:
+        raise ValueError(
+            f"The Markdown text must not exceed {_MAX_TTS_BYTES // (1024 * 1024)} MiB."
+        )
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     # O_EXCL and O_NOFOLLOW keep the temporary file private to this write.
     descriptor = os.open(
@@ -238,7 +268,17 @@ def _write_tts(
                 raise ValueError(
                     "TTS Markdown already exists. Use overwrite=True to replace it."
                 ) from None
-            temporary.unlink()
+            except OSError as error:
+                # Filesystems such as exFAT do not support hard links.
+                if error.errno not in (errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP):
+                    raise
+                if path.exists():
+                    raise ValueError(
+                        "TTS Markdown already exists. Use overwrite=True to replace it."
+                    ) from None
+                os.replace(temporary, path)
+            else:
+                temporary.unlink()
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
@@ -394,7 +434,13 @@ def create_server(root: Path) -> "FastMCP":
         if published is None:
             raise ToolError("Unknown or expired conversion ID. Convert the PDF first.")
         try:
-            path, size, overwritten = _write_tts(policy, published, markdown, overwrite)
+            path, size, overwritten = _write_tts(
+                policy,
+                published,
+                markdown,
+                overwrite,
+                {entry.path for entry in registry.values()},
+            )
             return TtsMarkdown(
                 conversion_id=conversion_id,
                 output_markdown=str(path),

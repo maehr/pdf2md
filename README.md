@@ -146,6 +146,7 @@ It never changes the extracted Markdown.
 The server does not rewrite, summarize, or normalize the text.
 The conversion output directory must still exist.
 Existing TTS copies require `overwrite=True`.
+The reviewed text must not exceed 16 MiB.
 The tool writes the new file atomically.
 
 ### Client configuration

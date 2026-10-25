@@ -1,6 +1,7 @@
 """MCP contracts and filesystem protection without model downloads."""
 
 import asyncio
+import errno
 import json
 import os
 import sys
@@ -375,6 +376,128 @@ def test_save_rejects_unsafe_target(pdf: Path, tmp_path: Path, change: str) -> N
         (tmp_path / "out").symlink_to(tmp_path / "moved", target_is_directory=True)
         assert "Symlinks" in asyncio.run(error(server, "save_tts_markdown", arguments))
         assert not (tmp_path / "moved" / "a.tts.md").exists()
+
+
+@pytest.mark.parametrize("change", ["edit", "replace", "delete"])
+def test_save_rejects_changed_extraction(
+    pdf: Path, tmp_path: Path, change: str
+) -> None:
+    server = mcp_server.create_server(tmp_path)
+    summary = asyncio.run(
+        call(
+            server,
+            "convert_pdf",
+            {"input_pdf": str(pdf), "output_markdown": "out/a.md"},
+        )
+    )
+    output = Path(summary["output_markdown"])
+    if change == "edit":
+        output.write_text("changed")
+    elif change == "replace":
+        data = output.read_bytes()
+        output.unlink()
+        output.write_bytes(data)
+    else:
+        output.unlink()
+    assert "changed" in asyncio.run(
+        error(
+            server,
+            "save_tts_markdown",
+            {"conversion_id": summary["conversion_id"], "markdown": "text"},
+        )
+    )
+    assert not (tmp_path / "out" / "a.tts.md").exists()
+
+
+def test_save_rejects_registered_extraction(pdf: Path, tmp_path: Path) -> None:
+    server = mcp_server.create_server(tmp_path)
+    first = asyncio.run(
+        call(
+            server,
+            "convert_pdf",
+            {"input_pdf": str(pdf), "output_markdown": "a.md"},
+        )
+    )
+    second = asyncio.run(
+        call(
+            server,
+            "convert_pdf",
+            {"input_pdf": str(pdf), "output_markdown": "a.tts.md"},
+        )
+    )
+    target = Path(second["output_markdown"])
+    extracted = target.read_bytes()
+    assert "another conversion" in asyncio.run(
+        error(
+            server,
+            "save_tts_markdown",
+            {
+                "conversion_id": first["conversion_id"],
+                "markdown": "reviewed",
+                "overwrite": True,
+            },
+        )
+    )
+    assert target.read_bytes() == extracted
+
+
+def test_save_without_hardlinks(
+    pdf: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = mcp_server.create_server(tmp_path)
+    summary = asyncio.run(
+        call(
+            server,
+            "convert_pdf",
+            {"input_pdf": str(pdf), "output_markdown": "out/a.md"},
+        )
+    )
+    target = tmp_path / "out" / "a.tts.md"
+
+    def unsupported(source: Path, destination: Path) -> None:
+        raise OSError(errno.ENOTSUP, "hard links are not supported")
+
+    monkeypatch.setattr(os, "link", unsupported)
+    saved = asyncio.run(
+        call(
+            server,
+            "save_tts_markdown",
+            {"conversion_id": summary["conversion_id"], "markdown": "text"},
+        )
+    )
+    assert not saved["overwritten"]
+    assert target.read_text() == "text"
+    assert not [path for path in target.parent.iterdir() if path.suffix == ".tmp"]
+    assert "overwrite=True" in asyncio.run(
+        error(
+            server,
+            "save_tts_markdown",
+            {"conversion_id": summary["conversion_id"], "markdown": "second"},
+        )
+    )
+    assert target.read_text() == "text"
+
+
+def test_save_size_limit(
+    pdf: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mcp_server, "_MAX_TTS_BYTES", 8)
+    server = mcp_server.create_server(tmp_path)
+    summary = asyncio.run(
+        call(
+            server,
+            "convert_pdf",
+            {"input_pdf": str(pdf), "output_markdown": "out/a.md"},
+        )
+    )
+    assert "must not exceed" in asyncio.run(
+        error(
+            server,
+            "save_tts_markdown",
+            {"conversion_id": summary["conversion_id"], "markdown": "123456789"},
+        )
+    )
+    assert not (tmp_path / "out" / "a.tts.md").exists()
 
 
 def test_save_failure_keeps_previous(
