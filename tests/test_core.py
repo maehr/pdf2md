@@ -10,6 +10,7 @@ from pdf2md.core import (
     markdown_warnings,
     repeated_margins,
     safe_asset,
+    select_pages,
     strip_margins,
     text_warnings,
     validate_pages,
@@ -60,6 +61,54 @@ def test_quality_conflict() -> None:
     validate_settings(Settings(quality="fast"))
     with pytest.raises(ConversionError, match="conflicts"):
         validate_settings(Settings(quality="fast", engine="vlm"))
+    with pytest.raises(ConversionError, match="cannot process"):
+        validate_settings(Settings(engine="pdf-inspector", split="always"))
+
+
+@pytest.mark.parametrize(
+    ("selection", "expected"),
+    [
+        (None, list(range(1, 10))),
+        ("1", [1]),
+        ("7-9", [7, 8, 9]),
+        ("9,1,3,7-9,3", [1, 3, 7, 8, 9]),
+        (" 1 , 3 - 4 ", [1, 3, 4]),
+        ("01,3-3", [1, 3]),
+    ],
+)
+def test_page_selection(selection: str | None, expected: list[int]) -> None:
+    assert select_pages(selection, 9) == expected
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        "",
+        " ",
+        ",",
+        "1,",
+        ",1",
+        "1,,3",
+        "1-",
+        "-2",
+        "1-2-3",
+        "one",
+        "1.5",
+        "+1",
+        "1 2",
+        "3-1",
+        "0",
+        "0-1",
+        "10",
+        "1-10",
+        "1-999999999999999999999999",
+        "١",
+        "1\n2",
+    ],
+)
+def test_invalid_page_selection(selection: str) -> None:
+    with pytest.raises(ConversionError, match="--pages"):
+        select_pages(selection, 9)
 
 
 def test_text_quality() -> None:
@@ -115,6 +164,30 @@ def test_page_coverage() -> None:
     validate_pages([page], 1)
     with pytest.raises(ConversionError, match="coverage"):
         validate_pages([page, page], 2)
+
+
+def test_selected_half_coverage() -> None:
+    pages = [
+        PageResult(
+            markdown="text",
+            report=PageReport(
+                page=number,
+                half=half,
+                source="scan",
+                engine="docling",
+                ocr=True,
+                vlm=False,
+            ),
+        )
+        for number in (2, 5)
+        for half in ("left", "right")
+    ]
+    validate_pages(pages, [2, 5], "always")
+    for invalid in (pages[:-1], pages[::-1], pages + pages[:1], pages[::2]):
+        with pytest.raises(ConversionError, match="coverage"):
+            validate_pages(invalid, [2, 5], "always")
+    with pytest.raises(ConversionError, match="coverage"):
+        validate_pages(pages, [2, 5])
 
 
 def test_boundaries() -> None:

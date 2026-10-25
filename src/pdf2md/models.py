@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field
 Source = Literal["auto", "digital", "ocred", "scan"]
 Engine = Literal["auto", "pdf-inspector", "docling", "vlm"]
 Quality = Literal["fast", "best"]
+Split = Literal["none", "always"]
+Half = Literal["left", "right"]
 
 CHUNK_SIZE = 8
 MODEL_ID = "ibm-granite/granite-docling-258M-mlx"
@@ -21,6 +23,15 @@ class Settings(BaseModel):
     source: Source = "auto"
     quality: Quality = "fast"
     engine: Engine = "auto"
+    pages: str | None = None
+    split: Split = "none"
+
+
+@dataclass(frozen=True)
+class PagePart:
+    page: int
+    half: Half
+    crop: tuple[float, float, float, float]
 
 
 @dataclass
@@ -49,6 +60,8 @@ class Provenance(BaseModel):
 
 class PageReport(BaseModel):
     page: int
+    half: Half | None = None
+    crop: list[float] = Field(default_factory=list)
     source: str
     engine: str
     ocr: bool
@@ -75,11 +88,12 @@ class Checkpoint(BaseModel):
 
 
 class ConversionReport(BaseModel):
-    schema_version: int = 1
+    schema_version: int = 2
     input: str
     output: str
     input_sha256: str
     page_count: int
+    selected_pages: list[int]
     source: str
     settings: Settings
     versions: dict[str, str]

@@ -7,9 +7,11 @@ import re
 import shutil
 import time
 from collections.abc import Callable, Iterator
+from contextlib import closing
 from importlib.metadata import PackageNotFoundError, version
 from itertools import groupby
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.parse import quote, unquote, urlparse
 
 from pydantic import ValidationError
@@ -20,6 +22,7 @@ from pdf2md.core import (
     fidelity_warnings,
     markdown_warnings,
     safe_asset,
+    select_pages,
     validate_pages,
     validate_settings,
     validate_text,
@@ -37,6 +40,7 @@ from pdf2md.models import (
     PageResult,
     Paths,
     Settings,
+    Split,
 )
 
 Progress = Callable[[int, int, str], None]
@@ -92,7 +96,12 @@ def check_assets(result: PageResult, directory: Path, prefix: str) -> None:
 
 
 def read_checkpoint(
-    path: Path, fingerprint: str, numbers: list[int], assets: Path, prefix: str
+    path: Path,
+    fingerprint: str,
+    numbers: list[int],
+    assets: Path,
+    prefix: str,
+    split: Split = "none",
 ) -> list[PageResult] | None:
     if not path.is_file():
         return None
@@ -100,9 +109,10 @@ def read_checkpoint(
         checkpoint = Checkpoint.model_validate_json(path.read_text(encoding="utf-8"))
         if checkpoint.fingerprint != fingerprint:
             return None
-        if [page.report.page for page in checkpoint.pages] != numbers:
-            return None
+        validate_pages(checkpoint.pages, numbers, split)
         for page in checkpoint.pages:
+            if split == "always" and len(page.report.crop) != 4:
+                return None
             check_assets(page, assets, prefix)
             validate_text(
                 page.markdown,
@@ -183,9 +193,72 @@ def extract_group(
     return results
 
 
-def chunks(count: int) -> Iterator[list[int]]:
-    for start in range(1, count + 1, CHUNK_SIZE):
-        yield list(range(start, min(count + 1, start + CHUNK_SIZE)))
+def extract_chunk(
+    numbers: list[int],
+    settings: Settings,
+    inspector: Inspector,
+    docling: Docling,
+    assets: Path,
+    prefix: str,
+) -> list[PageResult]:
+    if settings.split == "always":
+        with TemporaryDirectory(prefix="split-", dir=assets.parent) as temporary:
+            path = Path(temporary) / "halves.pdf"
+            parts = inspector.split_pages(numbers, path)
+            with closing(Inspector(path)) as split_inspector:
+                results = extract_chunk(
+                    list(range(1, len(parts) + 1)),
+                    settings.model_copy(update={"split": "none"}),
+                    split_inspector,
+                    docling.for_path(path),
+                    assets,
+                    prefix,
+                )
+            validate_pages(results, len(parts))
+            for result, part in zip(results, parts, strict=True):
+                result.report.page = part.page
+                result.report.half = part.half
+                result.report.crop = list(part.crop)
+                for provenance in result.report.provenance:
+                    provenance.page = part.page
+                    if provenance.bbox:
+                        left, top, right, bottom = provenance.bbox
+                        provenance.bbox = [
+                            left + part.crop[0],
+                            top + part.crop[1],
+                            right + part.crop[0],
+                            bottom + part.crop[1],
+                        ]
+            return results
+    infos = inspector.inspect(numbers, settings)
+    results = []
+    groups = groupby(
+        enumerate(infos),
+        key=lambda item: (
+            choose_engine(item[1], settings),
+            item[1].needs_ocr,
+            item[1].blank,
+            item[1].number - item[0],
+        ),
+    )
+    for (engine, _, _, _), group in groups:
+        results.extend(
+            extract_group(
+                [info for _, info in group],
+                engine,
+                inspector,
+                docling,
+                assets,
+                prefix,
+                settings,
+            )
+        )
+    return results
+
+
+def chunks(numbers: list[int]) -> Iterator[list[int]]:
+    for start in range(0, len(numbers), CHUNK_SIZE):
+        yield numbers[start : start + CHUNK_SIZE]
 
 
 def publish(paths: Paths, markdown: Path, report: Path | None, assets: Path) -> None:
@@ -272,6 +345,8 @@ def run(
     count = inspector.page_count
     if count == 0:
         raise ConversionError("The PDF has no pages.")
+    selected = select_pages(settings.pages, count)
+    work_count = len(selected) * (2 if settings.split == "always" else 1)
     with paths.input.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
     installed = versions()
@@ -281,7 +356,7 @@ def run(
     )
     if uses_vlm:
         if progress:
-            progress(0, count, "Prepare cached MLX model")
+            progress(0, work_count, "Prepare cached MLX model")
         docling.prepare_vlm()
     identity = {
         "input": digest,
@@ -300,39 +375,22 @@ def run(
     prefix = quote(paths.assets.name) + "/"
     pages = []
     resumed = 0
+    completed = 0
     warnings: list[str] = []
     previous = ""
     markdown_path = directory / "output.md"
     with markdown_path.open("w", encoding="utf-8") as markdown_file:
-        for numbers in chunks(count):
+        for numbers in chunks(selected):
             checkpoint_path = directory / f"chunk-{numbers[0]:06}.json"
             results = read_checkpoint(
-                checkpoint_path, fingerprint, numbers, assets, prefix
+                checkpoint_path, fingerprint, numbers, assets, prefix, settings.split
             )
             cached = results is not None
             if results is None:
-                infos = inspector.inspect(numbers, settings)
-                results = []
-                groups = groupby(
-                    infos,
-                    key=lambda page: (
-                        choose_engine(page, settings),
-                        page.needs_ocr,
-                        page.blank,
-                    ),
+                results = extract_chunk(
+                    numbers, settings, inspector, docling, assets, prefix
                 )
-                for (engine, _, _), group in groups:
-                    results.extend(
-                        extract_group(
-                            list(group),
-                            engine,
-                            inspector,
-                            docling,
-                            assets,
-                            prefix,
-                            settings,
-                        )
-                    )
+                validate_pages(results, numbers, settings.split)
                 atomic_text(
                     checkpoint_path,
                     Checkpoint(
@@ -340,7 +398,7 @@ def run(
                     ).model_dump_json(),
                 )
             else:
-                resumed += len(results)
+                resumed += len(numbers)
             for page in results:
                 number = page.report.page
                 page.report.warnings.extend(boundary_warnings(previous, page.markdown))
@@ -348,11 +406,17 @@ def run(
                     markdown_file.write(page.markdown.strip() + "\n\n")
                     previous = page.markdown
                 pages.append(page.report)
+                completed += 1
                 if progress:
                     label = "cached" if cached else page.report.engine
-                    progress(number, count, label)
+                    half = f" {page.report.half}" if page.report.half else ""
+                    progress(completed, work_count, f"Page {number}{half}: {label}")
     # Validate lightweight page records without retaining all Markdown in memory.
-    validate_pages((PageResult(markdown="", report=page) for page in pages), count)
+    validate_pages(
+        (PageResult(markdown="", report=page) for page in pages),
+        selected,
+        settings.split,
+    )
     sources = {page.source for page in pages if not page.blank} or {
         page.source for page in pages
     }
@@ -362,6 +426,7 @@ def run(
         output=str(paths.output),
         input_sha256=digest,
         page_count=count,
+        selected_pages=selected,
         source=source,
         settings=settings,
         versions=installed,

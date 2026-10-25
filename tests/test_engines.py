@@ -1,13 +1,15 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pypdfium2 as pdfium
 import pytest
+from conftest import make_spread
 from PIL import Image
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
 from pdf2md.engines import Docling, Inspector
-from pdf2md.models import PageInfo, Settings
+from pdf2md.models import PageInfo, Paths, Quality, Settings
 from pdf2md.pipeline import check_assets
 
 
@@ -82,6 +84,7 @@ def test_docling_export_without_models(
     from docling_core.types.doc import (
         BoundingBox,
         ContentLayer,
+        CoordOrigin,
         DocItemLabel,
         DoclingDocument,
         ImageRef,
@@ -94,7 +97,9 @@ def test_docling_export_without_models(
     document = DoclingDocument(name="test")
     document.add_page(9, Size(width=600, height=800))
     provenance = ProvenanceItem(
-        page_no=9, bbox=BoundingBox(l=0, t=100, r=200, b=0), charspan=(0, 10)
+        page_no=9,
+        bbox=BoundingBox(l=0, t=100, r=200, b=0, coord_origin=CoordOrigin.BOTTOMLEFT),
+        charspan=(0, 10),
     )
     document.add_text(
         label=DocItemLabel.PAGE_HEADER,
@@ -144,6 +149,45 @@ def test_docling_export_without_models(
     assert page.assets
     check_assets(page, assets, "book.assets/")
     assert page.report.provenance[0].page == 9
+    assert page.report.provenance[0].bbox == [0, 700, 200, 800]
+
+
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+def test_split_displayed_halves(tmp_path: Path, rotation: int) -> None:
+    source = make_spread(tmp_path / "spread.pdf", 3)
+    with pdfium.PdfDocument(source) as document:
+        page = document[2]
+        page.set_rotation(rotation)
+        page.close()
+        document.save(tmp_path / "rotated.pdf")
+    inspector = Inspector(tmp_path / "rotated.pdf")
+    try:
+        parts = inspector.split_pages([3], tmp_path / "halves.pdf")
+        assert [(part.page, part.half) for part in parts] == [(3, "left"), (3, "right")]
+        with pdfium.PdfDocument(tmp_path / "halves.pdf") as halves:
+            source_page = inspector.pdf[2]
+            width, height = source_page.get_size()
+            bitmap = source_page.render(scale=2)
+            image = bitmap.to_pil().copy()
+            bitmap.close()
+            source_page.close()
+            assert parts[0].crop == (0, 0, width / 2, height)
+            assert parts[1].crop == (width / 2, 0, width, height)
+            for index in range(2):
+                page = halves[index]
+                assert page.get_size() == (width / 2, height)
+                bitmap = page.render(scale=2)
+                expected = image.crop(
+                    (index * width, 0, (index + 1) * width, height * 2)
+                )
+                assert (
+                    bitmap.to_pil().convert("RGB").tobytes()
+                    == expected.convert("RGB").tobytes()
+                )
+                bitmap.close()
+                page.close()
+    finally:
+        inspector.close()
 
 
 @pytest.mark.models
@@ -157,3 +201,68 @@ def test_live_vlm(pdf: Path, tmp_path: Path) -> None:
     assert report.pages[0].engine == "vlm"
     assert report.model_revision
     assert "research" in (tmp_path / "vlm.md").read_text().lower()
+
+
+@pytest.mark.models
+@pytest.mark.parametrize("quality", ["fast", "best"])
+def test_live_split_scan(tmp_path: Path, quality: Quality) -> None:
+    from pdf2md.pipeline import convert
+
+    vector = tmp_path / "vector.pdf"
+    document = canvas.Canvas(str(vector), pagesize=(800, 400))
+    for x, side in ((0, "Left"), (400, "Right")):
+        document.setFont("Helvetica-Bold", 18)
+        document.drawString(x + 30, 350, f"{side} research section")
+        document.setFont("Helvetica", 11)
+        for row, text in enumerate(
+            [
+                "Local conversion preserves the original text.",
+                "Readers check each sentence against the source.",
+                "Each half contains a separate research section.",
+                "Figure 1. A measured signal.",
+            ]
+        ):
+            document.drawString(x + 30, 310 - row * 22, text)
+        document.line(x + 30, 60, x + 300, 60)
+        document.line(x + 30, 60, x + 30, 200)
+        document.lines(
+            [
+                (x + 30, 60, x + 100, 140),
+                (x + 100, 140, x + 170, 100),
+                (x + 170, 100, x + 300, 200),
+            ]
+        )
+    document.save()
+    with pdfium.PdfDocument(vector) as source:
+        page = source[0]
+        bitmap = page.render(scale=2)
+        image = bitmap.to_pil().copy()
+        bitmap.close()
+        page.close()
+    scan = tmp_path / "scan.pdf"
+    document = canvas.Canvas(str(scan), pagesize=(800, 400))
+    document.drawImage(ImageReader(image), 0, 0, 800, 400)
+    document.save()
+    paths = Paths(scan, tmp_path / "split.md")
+    report = convert(
+        paths, Settings(split="always", quality=quality), write_report=True
+    )
+    assert [(page.page, page.half) for page in report.pages] == [
+        (1, "left"),
+        (1, "right"),
+    ]
+    assert [page.engine for page in report.pages] == [
+        "vlm" if quality == "best" else "docling"
+    ] * 2
+    markdown = paths.output.read_text().lower()
+    assert markdown.index("left research") < markdown.index("right research")
+    assert "original text" in markdown
+    assert markdown.count("![image](") == 2
+    assert all(page.provenance for page in report.pages)
+    for page in report.pages:
+        assert all(provenance.page == 1 for provenance in page.provenance)
+        assert all(
+            provenance.bbox[0] >= page.crop[0] - 1
+            and provenance.bbox[2] <= page.crop[2] + 1
+            for provenance in page.provenance
+        )

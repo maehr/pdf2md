@@ -26,6 +26,21 @@ def make_pdf(path: Path, pages: int = 1) -> Path:
     return path
 
 
+def make_spread(path: Path, pages: int = 1) -> Path:
+    document = canvas.Canvas(str(path), pagesize=(400, 200))
+    for number in range(1, pages + 1):
+        document.setFillColorRGB(1, 0, 0)
+        document.rect(0, 0, 200, 200, fill=1, stroke=0)
+        document.setFillColorRGB(0, 0, 1)
+        document.rect(200, 0, 200, 200, fill=1, stroke=0)
+        document.setFillColorRGB(1, 1, 1)
+        document.drawString(20, 150, f"Left page {number}")
+        document.drawString(220, 150, f"Right page {number}")
+        document.showPage()
+    document.save()
+    return path
+
+
 @pytest.fixture
 def pdf(tmp_path: Path) -> Path:
     return make_pdf(tmp_path / "paper.pdf")

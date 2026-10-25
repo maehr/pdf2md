@@ -87,7 +87,7 @@ def test_conversion_and_read(pdf: Path, tmp_path: Path, custom: bool) -> None:
     assert summary["resumed_pages"] == 0
     assert summary["seconds"] >= 0
     report = json.loads(output.with_suffix(".report.json").read_text())
-    assert report["schema_version"] == 1
+    assert report["schema_version"] == 2
     assert report["versions"]["pdf2md-local"] == __version__
     chunk = asyncio.run(
         call(server, "read_markdown", {"conversion_id": summary["conversion_id"]})
