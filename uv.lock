@@ -1631,7 +1631,7 @@ wheels = [
 
 [[package]]
 name = "pdf2md-local"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "docling-slim", extra = ["convert-core", "feat-ocr-mac", "format-pdf", "models-local", "models-vlm-inline"] },

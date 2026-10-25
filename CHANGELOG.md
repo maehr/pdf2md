@@ -15,10 +15,12 @@ This file records changes in each release.
 - Dependabot checks `uv` and GitHub Actions every week.
 - CodeQL scans Python on pushes, pull requests, and a weekly schedule.
 - Contributor guidance, a code of conduct, and a bug report template support contributions.
+- `save_tts_markdown` saves reviewed Markdown as `<name>.tts.md` without changing the extraction.
 
 ### Changed
 
 - The JSON report uses schema version 2.
+- `read_markdown` accepts sections up to 65,536 UTF-8 bytes.
 - Provenance boxes and crop rectangles use the top-left page origin.
 - The README explains that an MCP client can forward returned Markdown to a remote provider.
 
