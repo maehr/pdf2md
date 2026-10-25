@@ -2,6 +2,27 @@
 
 This file records changes in each release.
 
+## 0.2.0 - 2026-10-25
+
+### Added
+
+- The optional `mcp` extra installs FastMCP 4.1.3.
+- The `pdf2md-mcp` command serves two local tools over stdio.
+- `convert_pdf` reuses the conversion pipeline and always writes a report with schema version 1.
+- Conversion summaries include paths, page counts, timing, and at most 20 distinct warnings.
+- `read_markdown` returns bounded UTF-8 chunks through temporary conversion IDs.
+- The server checks root containment, symlinks, output conflicts, and changed Markdown files.
+- A process lock rejects concurrent conversions across server instances.
+- Tests cover MCP schemas, publication failures, checkpoint recovery, stdio output, and optional installation.
+- Separate smoke tests exercise Apple Vision OCR and MLX through MCP worker threads.
+
+### Limits
+
+- The server supports stdio only.
+- The root restriction does not provide an operating-system sandbox.
+- Client timeouts do not guarantee cancellation.
+- The server provides no background tasks or progress notifications.
+
 ## 0.1.0 - 2026-10-25
 
 Initial release for Apple Silicon macOS with Python 3.12.

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pdf2md-local"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local PDF conversion with native extraction, Apple OCR, and MLX."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -16,8 +16,12 @@ dependencies = [
     "typer==0.26.8",
 ]
 
+[project.optional-dependencies]
+mcp = ["fastmcp==4.1.3"]
+
 [project.scripts]
 pdf2md = "pdf2md.cli:app"
+pdf2md-mcp = "pdf2md.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pdf2md"]
@@ -27,6 +31,10 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ty.analysis]
+# FastMCP is optional. Installed extras retain full type checking.
+allowed-unresolved-imports = ["fastmcp.**"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
