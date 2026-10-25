@@ -38,7 +38,7 @@ def test_tool_schemas(tmp_path: Path) -> None:
     async def check() -> None:
         async with fastmcp.Client(mcp_server.create_server(tmp_path)) as client:
             tools = {tool.name: tool for tool in await client.list_tools()}
-            assert set(tools) == {"convert_pdf", "read_markdown"}
+            assert set(tools) == {"convert_pdf", "read_markdown", "save_tts_markdown"}
             convert = tools["convert_pdf"]
             schema = convert.input_schema
             assert schema["required"] == ["input_pdf"]
@@ -63,6 +63,15 @@ def test_tool_schemas(tmp_path: Path) -> None:
             assert read.input_schema["properties"]["max_bytes"]["default"] == 16384
             assert read.input_schema["properties"]["offset_bytes"]["default"] == 0
             assert read.output_schema["properties"]["markdown"]["type"] == "string"
+            save = tools["save_tts_markdown"]
+            assert save.input_schema["required"] == ["conversion_id", "markdown"]
+            assert save.input_schema["properties"]["overwrite"]["default"] is False
+            assert save.annotations.read_only_hint is False
+            assert save.annotations.destructive_hint is True
+            assert save.annotations.open_world_hint is False
+            assert (
+                save.output_schema["properties"]["bytes_written"]["type"] == "integer"
+            )
             assert await client.list_resources() == []
             assert await client.list_prompts() == []
 
@@ -192,7 +201,7 @@ def test_unicode_pagination(
     summary = asyncio.run(call(server, "convert_pdf", {"input_pdf": str(pdf)}))
 
     async def check() -> None:
-        for limit in (4, 5, 7, 9, 16384):
+        for limit in (4, 5, 7, 9, 65536):
             data = b""
             offset = 0
             while True:
@@ -227,7 +236,7 @@ def test_unicode_pagination(
             ({"offset_bytes": len(data) + 1}, "exceeds"),
             ({"offset_bytes": 2}, "inside a UTF-8"),
             ({"max_bytes": 3}, "between"),
-            ({"max_bytes": 16385}, "between"),
+            ({"max_bytes": 65537}, "between"),
         ):
             assert message in await error(
                 server,
@@ -239,6 +248,169 @@ def test_unicode_pagination(
         )
 
     asyncio.run(check())
+
+
+def test_read_64k_chunk(
+    pdf: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = mcp_server.convert
+    text = "a" * 65536 + "b" * 65536
+
+    def convert(paths: Paths, settings: Settings, *, write_report: bool = False):
+        report = original(paths, settings, write_report=write_report)
+        paths.output.write_text(text, encoding="utf-8")
+        return report
+
+    monkeypatch.setattr(mcp_server, "convert", convert)
+    server = mcp_server.create_server(tmp_path)
+    summary = asyncio.run(call(server, "convert_pdf", {"input_pdf": str(pdf)}))
+
+    async def check() -> None:
+        first = await call(
+            server,
+            "read_markdown",
+            {"conversion_id": summary["conversion_id"], "max_bytes": 65536},
+        )
+        assert first["markdown"] == "a" * 65536
+        assert first["next_offset_bytes"] == 65536
+        assert not first["eof"]
+        second = await call(
+            server,
+            "read_markdown",
+            {
+                "conversion_id": summary["conversion_id"],
+                "offset_bytes": first["next_offset_bytes"],
+                "max_bytes": 65536,
+            },
+        )
+        assert second["markdown"] == "b" * 65536
+        assert second["next_offset_bytes"] == len(text.encode())
+        assert second["eof"]
+
+    asyncio.run(check())
+
+
+def test_save_tts_markdown(pdf: Path, tmp_path: Path) -> None:
+    server = mcp_server.create_server(tmp_path)
+    summary = asyncio.run(
+        call(
+            server,
+            "convert_pdf",
+            {"input_pdf": str(pdf), "output_markdown": "out/paper.md"},
+        )
+    )
+    source = Path(summary["output_markdown"])
+    extracted = source.read_bytes()
+    text = "# Listening edition\n\nUnique page marker 0001.\n"
+    saved = asyncio.run(
+        call(
+            server,
+            "save_tts_markdown",
+            {"conversion_id": summary["conversion_id"], "markdown": text},
+        )
+    )
+    target = tmp_path / "out" / "paper.tts.md"
+    assert saved == {
+        "conversion_id": summary["conversion_id"],
+        "output_markdown": str(target),
+        "bytes_written": len(text.encode()),
+        "overwritten": False,
+    }
+    assert target.read_text() == text
+    assert source.read_bytes() == extracted
+    assert "overwrite=True" in asyncio.run(
+        error(
+            server,
+            "save_tts_markdown",
+            {"conversion_id": summary["conversion_id"], "markdown": "second"},
+        )
+    )
+    assert target.read_text() == text
+    replaced = asyncio.run(
+        call(
+            server,
+            "save_tts_markdown",
+            {
+                "conversion_id": summary["conversion_id"],
+                "markdown": "",
+                "overwrite": True,
+            },
+        )
+    )
+    assert replaced["overwritten"]
+    assert replaced["bytes_written"] == 0
+    assert target.read_bytes() == b""
+    assert source.read_bytes() == extracted
+
+
+@pytest.mark.parametrize("change", ["directory", "symlink", "parent"])
+def test_save_rejects_unsafe_target(pdf: Path, tmp_path: Path, change: str) -> None:
+    server = mcp_server.create_server(tmp_path)
+    summary = asyncio.run(
+        call(
+            server,
+            "convert_pdf",
+            {"input_pdf": str(pdf), "output_markdown": "out/a.md"},
+        )
+    )
+    target = tmp_path / "out" / "a.tts.md"
+    arguments = {
+        "conversion_id": summary["conversion_id"],
+        "markdown": "text",
+        "overwrite": True,
+    }
+    if change == "directory":
+        target.mkdir()
+        assert "regular file" in asyncio.run(
+            error(server, "save_tts_markdown", arguments)
+        )
+        assert target.is_dir()
+    elif change == "symlink":
+        outside = tmp_path / "outside.md"
+        target.symlink_to(outside)
+        assert "Symlinks" in asyncio.run(error(server, "save_tts_markdown", arguments))
+        assert not outside.exists()
+    else:
+        (tmp_path / "out").rename(tmp_path / "moved")
+        (tmp_path / "out").symlink_to(tmp_path / "moved", target_is_directory=True)
+        assert "Symlinks" in asyncio.run(error(server, "save_tts_markdown", arguments))
+        assert not (tmp_path / "moved" / "a.tts.md").exists()
+
+
+def test_save_failure_keeps_previous(
+    pdf: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = mcp_server.create_server(tmp_path)
+    summary = asyncio.run(
+        call(
+            server,
+            "convert_pdf",
+            {"input_pdf": str(pdf), "output_markdown": "out/a.md"},
+        )
+    )
+    target = tmp_path / "out" / "a.tts.md"
+    target.write_text("previous")
+    replace = os.replace
+
+    def fail(source: str | Path, destination: str | Path) -> None:
+        if Path(destination) == target:
+            raise OSError("forced save failure")
+        replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", fail)
+    arguments = {
+        "conversion_id": summary["conversion_id"],
+        "markdown": "text",
+        "overwrite": True,
+    }
+    assert "forced save failure" in asyncio.run(
+        error(server, "save_tts_markdown", arguments)
+    )
+    assert target.read_text() == "previous"
+    assert not [path for path in target.parent.iterdir() if path.suffix == ".tmp"]
+    monkeypatch.setattr(os, "replace", replace)
+    assert asyncio.run(call(server, "save_tts_markdown", arguments))["overwritten"]
+    assert target.read_text() == "text"
 
 
 @pytest.mark.parametrize("change", ["edit", "replace", "delete", "symlink", "parent"])
@@ -283,6 +455,13 @@ def test_root_replacement(pdf: Path, tmp_path: Path) -> None:
     assert "root changed" in asyncio.run(
         error(server, "read_markdown", {"conversion_id": summary["conversion_id"]})
     )
+    assert "root changed" in asyncio.run(
+        error(
+            server,
+            "save_tts_markdown",
+            {"conversion_id": summary["conversion_id"], "markdown": "text"},
+        )
+    )
 
 
 def test_private_registry_and_empty_markdown(tmp_path: Path) -> None:
@@ -309,6 +488,13 @@ def test_private_registry_and_empty_markdown(tmp_path: Path) -> None:
             mcp_server.create_server(tmp_path),
             "read_markdown",
             {"conversion_id": summary["conversion_id"]},
+        )
+    )
+    assert "Unknown or expired" in asyncio.run(
+        error(
+            mcp_server.create_server(tmp_path),
+            "save_tts_markdown",
+            {"conversion_id": summary["conversion_id"], "markdown": "text"},
         )
     )
 
@@ -701,6 +887,7 @@ def test_stdio_protocol_only(pdf: Path, tmp_path: Path) -> None:
     assert {tool["name"] for tool in by_id[2]["result"]["tools"]} == {
         "convert_pdf",
         "read_markdown",
+        "save_tts_markdown",
     }
     assert not by_id[3]["result"].get("isError")
     assert by_id[3]["result"]["structuredContent"]["page_count"] == 1

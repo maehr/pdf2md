@@ -25,6 +25,8 @@ if TYPE_CHECKING:
 _CONVERSION_LOCK = Lock()
 _LOGGER = logging.getLogger(__name__)
 _INSTALL_HELP = "Install the MCP extra with: uv sync --locked --extra mcp"
+_MAX_READ_BYTES = 65536
+_TTS_SUFFIX = ".tts.md"
 
 
 class ConversionSummary(BaseModel):
@@ -51,6 +53,15 @@ class MarkdownChunk(BaseModel):
     offset_bytes: int
     next_offset_bytes: int
     eof: bool
+
+
+class TtsMarkdown(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    conversion_id: str
+    output_markdown: str
+    bytes_written: int
+    overwritten: bool
 
 
 @dataclass(frozen=True)
@@ -151,8 +162,8 @@ def _read_chunk(
 ) -> tuple[str, int, bool]:
     if offset_bytes < 0:
         raise ValueError("offset_bytes must be at least 0.")
-    if not 4 <= max_bytes <= 16384:
-        raise ValueError("max_bytes must be between 4 and 16384.")
+    if not 4 <= max_bytes <= _MAX_READ_BYTES:
+        raise ValueError(f"max_bytes must be between 4 and {_MAX_READ_BYTES}.")
     path = root.resolve(str(published.path))
     # O_NOFOLLOW also rejects replacement of the final target during validation.
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -189,6 +200,53 @@ def _read_chunk(
     return markdown, next_offset, next_offset == identity.size
 
 
+def _write_tts(
+    root: _Root, published: _Published, markdown: str, overwrite: bool
+) -> tuple[Path, int, bool]:
+    path = root.resolve(str(published.path.with_suffix(_TTS_SUFFIX)))
+    if path == published.path:
+        raise ValueError("The TTS copy cannot replace the extracted Markdown.")
+    if not path.parent.is_dir():
+        raise ValueError("The extraction output directory no longer exists.")
+    if path.exists() and not path.is_file():
+        raise ValueError("The TTS Markdown target is not a regular file.")
+    overwritten = path.exists()
+    if overwritten and not overwrite:
+        raise ValueError(
+            "TTS Markdown already exists. Use overwrite=True to replace it."
+        )
+    try:
+        data = markdown.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError("The Markdown text contains invalid Unicode.") from None
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    # O_EXCL and O_NOFOLLOW keep the temporary file private to this write.
+    descriptor = os.open(
+        temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o666
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if overwrite:
+            os.replace(temporary, path)
+        else:
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                raise ValueError(
+                    "TTS Markdown already exists. Use overwrite=True to replace it."
+                ) from None
+            temporary.unlink()
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    if root.resolve(str(path)) != path:
+        raise ValueError("The TTS Markdown target changed during the write.")
+    return path, len(data), overwritten
+
+
 def create_server(root: Path) -> "FastMCP":
     """Create a local server with a private registry of published results."""
     try:
@@ -206,6 +264,7 @@ def create_server(root: Path) -> "FastMCP":
             "Convert one local PDF within the configured root. "
             "All conversion and inference run locally. "
             "Read results with read_markdown and next_offset_bytes. "
+            "Save reviewed Markdown with save_tts_markdown. "
             "Conversion IDs expire when this server process exits."
         ),
         mask_error_details=True,
@@ -313,6 +372,37 @@ def create_server(root: Path) -> "FastMCP":
             )
         except (OSError, ValueError, RuntimeError) as error:
             raise ToolError(f"Cannot read Markdown: {error}") from None
+
+    @server.tool(
+        annotations={
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        }
+    )
+    def save_tts_markdown(
+        conversion_id: str, markdown: str, overwrite: bool = False
+    ) -> TtsMarkdown:
+        """Save agent-reviewed Markdown as <name>.tts.md next to the extraction.
+
+        The tool never changes the extracted Markdown.
+        overwrite=True can replace an existing TTS copy.
+        The server does not rewrite, summarize, or normalize the text.
+        """
+        published = registry.get(conversion_id)
+        if published is None:
+            raise ToolError("Unknown or expired conversion ID. Convert the PDF first.")
+        try:
+            path, size, overwritten = _write_tts(policy, published, markdown, overwrite)
+            return TtsMarkdown(
+                conversion_id=conversion_id,
+                output_markdown=str(path),
+                bytes_written=size,
+                overwritten=overwritten,
+            )
+        except (OSError, ValueError, RuntimeError) as error:
+            raise ToolError(f"Cannot save TTS Markdown: {error}") from None
 
     return server
 

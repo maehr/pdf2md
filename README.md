@@ -3,7 +3,7 @@
 [![CI](https://github.com/maehr/pdf2md/actions/workflows/ci.yml/badge.svg)](https://github.com/maehr/pdf2md/actions/workflows/ci.yml)
 
 Convert one PDF into Markdown with local engines.
-Version 0.2.0 adds an optional Model Context Protocol (MCP) server.
+Version 0.3.0 adds an MCP tool for agent-reviewed TTS Markdown.
 The default fast mode uses native text and Apple Vision optical character recognition (OCR) through Docling.
 Best mode uses the GraniteDocling vision language model (VLM) through MLX on Apple Silicon.
 
@@ -109,12 +109,13 @@ The server exits with an error if the variable is unset or empty.
 The root must exist before startup.
 The server provides no HTTP listener.
 
-The server exposes two tools:
+The server exposes three tools:
 
 | Tool | Behavior |
 | --- | --- |
 | `convert_pdf` | Converts one local PDF and returns paths, page counts, timing, and bounded warnings. |
-| `read_markdown` | Reads up to 16,384 UTF-8 bytes from a successful conversion. |
+| `read_markdown` | Reads up to 65,536 UTF-8 bytes from a successful conversion. |
+| `save_tts_markdown` | Saves reviewed Markdown as `<name>.tts.md` next to the extracted Markdown. |
 
 `convert_pdf` accepts `input_pdf`, `output_markdown`, `source`, `quality`, `engine`, and `overwrite`.
 Source, quality, and engine values match the CLI options above.
@@ -134,10 +135,18 @@ A second conversion receives a busy error.
 Use the returned `conversion_id` with `read_markdown`.
 Start at `offset_bytes=0`.
 Use `next_offset_bytes` for each later call until `eof` is true.
-Set `max_bytes` between 4 and 16,384.
+Set `max_bytes` between 4 and 65,536.
 Offsets count UTF-8 bytes, not characters.
 Conversion IDs expire when the server process exits.
 The server rejects changed or missing Markdown files.
+
+Use `save_tts_markdown` with the same conversion ID and the reviewed Markdown.
+The tool writes `<name>.tts.md` next to the extracted `<name>.md`.
+It never changes the extracted Markdown.
+The server does not rewrite, summarize, or normalize the text.
+The conversion output directory must still exist.
+Existing TTS copies require `overwrite=True`.
+The tool writes the new file atomically.
 
 ### Client configuration
 
@@ -177,6 +186,7 @@ The configured root limits tool access to one directory tree.
 The server rejects URLs, paths outside the root, and symlinks in file paths.
 It also checks report, asset, and work targets.
 `read_markdown` accepts conversion IDs, never file paths.
+`save_tts_markdown` derives its target from the conversion ID.
 The root restriction is an application check, not an operating-system sandbox.
 The server retains the local user's file permissions.
 
