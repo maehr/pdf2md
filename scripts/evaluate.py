@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from tempfile import mkdtemp
 
 
 def evaluate(
@@ -26,6 +27,7 @@ def evaluate(
         for engine in engines or ["pdf-inspector", "docling", "vlm"]:
             directory = output / f"{source.stem}-{identity}" / engine
             directory.mkdir(parents=True, exist_ok=True)
+            directory = Path(mkdtemp(prefix="run-", dir=directory))
             destination = directory / "output.md"
             started = time.perf_counter()
             with (directory / "run.log").open("w") as log:
