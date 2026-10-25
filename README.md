@@ -1,7 +1,7 @@
 # pdf2md
 
 Convert one PDF into Markdown with local engines.
-Version 0.1.0 is the initial release for academic papers and books.
+Version 0.2.0 adds an optional Model Context Protocol (MCP) server.
 The default fast mode uses native text and Apple Vision optical character recognition (OCR) through Docling.
 Best mode uses the GraniteDocling vision language model (VLM) through MLX on Apple Silicon.
 
@@ -62,6 +62,105 @@ Each page record includes its classification, engine, OCR use, VLM use, and extr
 The command prints progress and warnings to standard error.
 It prints the output path to standard output after success.
 
+## Local MCP server
+
+Install the optional FastMCP 4.1.3 server:
+
+```sh
+uv sync --locked --extra mcp
+```
+
+Start the server with one allowed directory:
+
+```sh
+PDF2MD_MCP_ROOT="$HOME/Documents" uv run --locked --extra mcp pdf2md-mcp
+```
+
+This command starts a stdio protocol server.
+It does not provide an interactive terminal prompt.
+The server uses the current directory if `PDF2MD_MCP_ROOT` is unset.
+The root must exist before startup.
+The server provides no HTTP listener.
+
+The server exposes two tools:
+
+| Tool | Behavior |
+| --- | --- |
+| `convert_pdf` | Converts one local PDF and returns paths, page counts, timing, and bounded warnings. |
+| `read_markdown` | Reads up to 16,384 UTF-8 bytes from a successful conversion. |
+
+`convert_pdf` accepts `input_pdf`, `output_markdown`, `source`, `quality`, `engine`, and `overwrite`.
+Source, quality, and engine values match the CLI options above.
+Relative paths start at the configured root.
+The default output replaces the input suffix with `.md`.
+The tool always writes a report with schema version 1.
+It returns at most 20 distinct warnings and counts omitted warnings.
+It preserves the existing pipeline, checkpoints, and atomic publication.
+
+Existing Markdown, report, or asset targets require `overwrite=True`.
+This option can replace existing output files after successful conversion.
+A work directory alone permits checkpoint recovery without `overwrite=True`.
+Failed conversion preserves prior published outputs.
+One process runs one conversion at a time.
+A second conversion receives a busy error.
+
+Use the returned `conversion_id` with `read_markdown`.
+Start at `offset_bytes=0`.
+Use `next_offset_bytes` for each later call until `eof` is true.
+Set `max_bytes` between 4 and 16,384.
+Offsets count UTF-8 bytes, not characters.
+Conversion IDs expire when the server process exits.
+The server rejects changed or missing Markdown files.
+
+### Client configuration
+
+Replace both placeholder paths with absolute paths:
+
+```json
+{
+  "mcpServers": {
+    "pdf2md": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/absolute/path/to/pdf2md",
+        "--locked",
+        "--extra",
+        "mcp",
+        "pdf2md-mcp"
+      ],
+      "env": {
+        "PDF2MD_MCP_ROOT": "/absolute/path/to/pdfs",
+        "HF_HUB_OFFLINE": "1"
+      }
+    }
+  }
+}
+```
+
+The client starts the server as a local subprocess.
+Configuration keys can differ between MCP clients.
+Remove `HF_HUB_OFFLINE` until the required model weights exist in the cache.
+After that, use `HF_HUB_OFFLINE=1` for offline operation.
+
+### File access and limits
+
+The configured root limits tool access to one directory tree.
+The server rejects URLs, paths outside the root, and symlinks in file paths.
+It also checks report, asset, and work targets.
+`read_markdown` accepts conversion IDs, never file paths.
+The root restriction is an application check, not an operating-system sandbox.
+The server retains the local user's file permissions.
+
+All PDF processing and inference run locally.
+The first conversion can download required model weights.
+The server sends diagnostics to standard error.
+Standard output contains only MCP protocol messages.
+Long conversions remain synchronous tool calls.
+Client timeouts do not guarantee cancellation.
+This release provides no background tasks or progress notifications.
+
 ## Engine selection
 
 Fast mode uses native extraction for pages with reliable text and simple layouts.
@@ -108,7 +207,7 @@ The checks detect missing pages, invalid text, and broken asset links.
 They cannot prove that a transcription matches its source.
 Inspect important quotations, formulas, reading order, and table continuations against the PDF.
 Ambiguous boundaries between chunks remain separate.
-Version 0.1.0 does not infer missing chapter levels or repair equations.
+The application does not infer missing chapter levels or repair equations.
 
 Fast mode can omit footnotes.
 Best mode can place numeric values in incorrect table rows.
@@ -130,6 +229,19 @@ uv run --locked pytest -m integration
 
 The normal test suite does not download model weights.
 
+Run the MCP checks with the optional extra:
+
+```sh
+uv run --locked --extra mcp ruff check .
+uv run --locked --extra mcp ruff format --check .
+uv run --locked --extra mcp ty check
+uv run --locked --extra mcp pytest
+uv run --locked --extra mcp pytest --doctest-modules src tests
+```
+
+Tests without the extra skip MCP integration tests.
+The tests still check CLI independence and the missing-extra error.
+
 Include docstring examples with this command:
 
 ```sh
@@ -140,6 +252,12 @@ Run the separate model smoke test after the required weights exist in the cache:
 
 ```sh
 HF_HUB_OFFLINE=1 uv run --locked pytest -m models
+```
+
+Test Apple Vision OCR and MLX through MCP worker threads separately:
+
+```sh
+HF_HUB_OFFLINE=1 uv run --locked --extra mcp pytest -m models tests/test_mcp_server.py
 ```
 
 ## Release checks
