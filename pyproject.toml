@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pdf2md-local"
+version = "0.1.0"
+description = "Local PDF conversion with native extraction, Apple OCR, and MLX."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "docling-slim[convert-core,feat-ocr-mac,format-pdf,models-local,models-vlm-inline]==2.142.1",
+    "pdf-inspector==1.25.2",
+    "pydantic==2.14.1",
+    "pypdfium2==5.14.0",
+    "typer==0.26.8",
+]
+
+[project.scripts]
+pdf2md = "pdf2md.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pdf2md"]
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers -m 'not models'"
+markers = ["integration: uses installed PDF engines", "models: downloads or loads ML models"]
+
+[tool.coverage.run]
+source = ["pdf2md"]
+
+[tool.coverage.report]
+show_missing = true
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "reportlab==5.1.0",
+    "ruff==0.17.2",
+    "ty==0.0.91",
+]
