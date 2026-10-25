@@ -6,7 +6,26 @@ from collections import Counter
 from collections.abc import Iterable
 from pathlib import PurePosixPath
 
-from pdf2md.models import ConversionError, PageInfo, PageResult, Settings
+from pdf2md.models import ConversionError, PageInfo, PageResult, Settings, Split
+
+
+def select_pages(selection: str | None, count: int) -> list[int]:
+    """Normalize physical page numbers before any inference."""
+    if selection is None:
+        return list(range(1, count + 1))
+    numbers: set[int] = set()
+    for part in selection.split(","):
+        match = re.fullmatch(r"\s*([0-9]+)\s*(?:-\s*([0-9]+)\s*)?", part)
+        if match is None:
+            raise ConversionError("--pages requires pages or ranges, such as 1,3,7-9.")
+        start = int(match[1])
+        end = int(match[2]) if match[2] else start
+        if start > end:
+            raise ConversionError(f"--pages contains a reversed range: {part.strip()}.")
+        if start < 1 or end > count:
+            raise ConversionError(f"--pages must stay within physical pages 1-{count}.")
+        numbers.update(range(start, end + 1))
+    return sorted(numbers)
 
 
 def text_warnings(text: str) -> list[str]:
@@ -95,6 +114,8 @@ def validate_settings(settings: Settings) -> None:
     """
     if settings.quality == "fast" and settings.engine == "vlm":
         raise ConversionError("--engine vlm conflicts with --quality fast.")
+    if settings.split == "always" and settings.engine == "pdf-inspector":
+        raise ConversionError("--engine pdf-inspector cannot process --split always.")
 
 
 def validate_text(markdown: str, page: PageInfo) -> None:
@@ -177,13 +198,18 @@ def safe_asset(name: str) -> bool:
     )
 
 
-def validate_pages(pages: Iterable[PageResult], count: int) -> None:
-    """Require every physical page exactly once and in order.
+def validate_pages(
+    pages: Iterable[PageResult], selection: int | list[int], split: Split = "none"
+) -> None:
+    """Require each selected page and half exactly once, in source order.
 
     >>> validate_pages([], 0)
     """
-    numbers = [page.report.page for page in pages]
-    if numbers != list(range(1, count + 1)):
+    numbers = list(range(1, selection + 1)) if isinstance(selection, int) else selection
+    halves = ("left", "right") if split == "always" else (None,)
+    expected = [(number, half) for number in numbers for half in halves]
+    actual = [(page.report.page, page.report.half) for page in pages]
+    if actual != expected:
         raise ConversionError(
             "Page coverage is incomplete, duplicated, or out of order."
         )

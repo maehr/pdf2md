@@ -5,7 +5,15 @@ from typing import Annotated
 
 import typer
 
-from pdf2md.models import ConversionError, Engine, Paths, Quality, Settings, Source
+from pdf2md.models import (
+    ConversionError,
+    Engine,
+    Paths,
+    Quality,
+    Settings,
+    Source,
+    Split,
+)
 from pdf2md.pipeline import convert
 
 app = typer.Typer(add_completion=False, pretty_exceptions_enable=False)
@@ -18,10 +26,18 @@ def main(
     source: Annotated[Source, typer.Option()] = "auto",
     quality: Annotated[Quality, typer.Option()] = "fast",
     engine: Annotated[Engine, typer.Option()] = "auto",
+    pages: Annotated[
+        str | None, typer.Option(help="Physical PDF pages, such as 1,3,7-9.")
+    ] = None,
+    split: Annotated[
+        Split, typer.Option(help="Split selected pages into left and right halves.")
+    ] = "none",
     report: Annotated[bool, typer.Option(help="Write a JSON report.")] = False,
 ) -> None:
     """Convert a PDF into local Markdown, figures, and optional provenance."""
-    settings = Settings(source=source, quality=quality, engine=engine)
+    settings = Settings(
+        source=source, quality=quality, engine=engine, pages=pages, split=split
+    )
 
     def progress(page: int, count: int, label: str) -> None:
         typer.echo(f"[{page}/{count}] {label}", err=True)

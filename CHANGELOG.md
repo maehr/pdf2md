@@ -2,6 +2,32 @@
 
 This file records changes in each release.
 
+## Unreleased
+
+### Added
+
+- The `--pages` option selects physical PDF pages and ranges.
+- The `--split always` option divides facing-page scans into left and right halves.
+- Reports include `selected_pages`, `page_count`, `half`, and `crop`.
+- The repository includes the AGPL-3.0-or-later license.
+- `SECURITY.md` describes supported versions and private vulnerability reporting.
+- CI runs lint, type checks, non-model tests, and `uv build` on macOS.
+- Dependabot checks `uv` and GitHub Actions every week.
+- CodeQL scans Python on pushes, pull requests, and a weekly schedule.
+- Contributor guidance, a code of conduct, and a bug report template support contributions.
+
+### Changed
+
+- The JSON report uses schema version 2.
+- Provenance boxes and crop rectangles use the top-left page origin.
+- The README explains that an MCP client can forward returned Markdown to a remote provider.
+
+### Breaking Changes
+
+- Report schema version 2 replaces schema version 1.
+- Provenance boxes use the top-left origin instead of the bottom-left origin.
+- `PDF2MD_MCP_ROOT` is required. The server no longer uses the current directory.
+
 ## 0.2.0 - 2026-10-25
 
 ### Added

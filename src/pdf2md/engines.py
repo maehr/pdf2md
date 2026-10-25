@@ -18,6 +18,7 @@ from pdf2md.core import (
 from pdf2md.models import (
     ConversionError,
     PageInfo,
+    PagePart,
     PageReport,
     PageResult,
     Provenance,
@@ -46,6 +47,34 @@ class Inspector:
 
     def close(self) -> None:
         self.pdf.close()
+
+    def split_pages(self, numbers: list[int], destination: Path) -> list[PagePart]:
+        """Render each displayed half at 144 DPI for local OCR and VLM input."""
+        parts = []
+        with pdfium.PdfDocument.new() as document:
+            for number in numbers:
+                with closing(self.pdf[number - 1]) as source:
+                    width, height = source.get_size()
+                    for half, left, right in (
+                        ("left", 0.0, width / 2),
+                        ("right", width / 2, width),
+                    ):
+                        with (
+                            closing(
+                                source.render(scale=2, crop=(left, 0, width - right, 0))
+                            ) as bitmap,
+                            closing(document.new_page(right - left, height)) as page,
+                        ):
+                            image = pdfium.PdfImage.new(document)
+                            image.set_bitmap(bitmap)
+                            image.set_matrix(
+                                pdfium.PdfMatrix(right - left, 0, 0, height)
+                            )
+                            page.insert_obj(image)
+                            page.gen_content()
+                        parts.append(PagePart(number, half, (left, 0.0, right, height)))
+            document.save(destination)
+        return parts
 
     def inspect(self, numbers: list[int], settings: Settings) -> list[PageInfo]:
         inspection_error = None
@@ -174,6 +203,14 @@ class Docling:
         self.converters: dict[tuple[str, bool], DocumentConverter] = {}
         self.model_revision: str | None = None
         self.vlm_error: str | None = None
+
+    def for_path(self, path: Path) -> "Docling":
+        """Reuse loaded models for a temporary split document."""
+        adapter = Docling(path)
+        adapter.converters = self.converters
+        adapter.model_revision = self.model_revision
+        adapter.vlm_error = self.vlm_error
+        return adapter
 
     def prepare_vlm(self) -> None:
         from huggingface_hub import snapshot_download
@@ -343,7 +380,11 @@ class Docling:
             Provenance(
                 page=number,
                 label=item.label.value,
-                bbox=[prov.bbox.l, prov.bbox.t, prov.bbox.r, prov.bbox.b],
+                bbox=list(
+                    prov.bbox.to_top_left_origin(
+                        doc.pages[number].size.height
+                    ).as_tuple()
+                ),
             )
             for item, _ in doc.iterate_items(
                 traverse_pictures=True,

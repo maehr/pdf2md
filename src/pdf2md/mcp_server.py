@@ -321,10 +321,9 @@ def main() -> None:
     """Start the optional server over stdio only."""
     try:
         root_value = os.environ.get("PDF2MD_MCP_ROOT")
-        if root_value == "":
-            raise ValueError("PDF2MD_MCP_ROOT must name an existing directory.")
-        root = Path.cwd() if root_value is None else Path(root_value)
-        server = create_server(root)
+        if not root_value:
+            raise ValueError("PDF2MD_MCP_ROOT must be set to an existing directory.")
+        server = create_server(Path(root_value))
     except (OSError, ValueError, RuntimeError) as error:
         print(f"Error: {error}", file=sys.stderr)
         raise SystemExit(1) from None

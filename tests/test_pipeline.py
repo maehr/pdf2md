@@ -1,8 +1,9 @@
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
-from conftest import make_pdf
+from conftest import make_pdf, make_spread
 from typer.testing import CliRunner
 
 from pdf2md import pipeline
@@ -14,8 +15,51 @@ from pdf2md.models import (
     PageReport,
     PageResult,
     Paths,
+    Provenance,
+    Quality,
     Settings,
+    Split,
 )
+
+
+@pytest.fixture
+def fake_docling(monkeypatch: pytest.MonkeyPatch) -> list[list[int]]:
+    calls: list[list[int]] = []
+    monkeypatch.setattr(Docling, "prepare_vlm", lambda self: None)
+
+    def extract(
+        self: Docling,
+        infos: list[PageInfo],
+        engine: str,
+        assets: Path,
+        prefix: str,
+    ) -> dict[int, PageResult]:
+        calls.append([info.number for info in infos])
+        digest = hashlib.sha256(self.path.read_bytes()).hexdigest()[:12]
+        results = {}
+        for info in infos:
+            name = f"{digest}-{info.number}.png"
+            (assets / name).write_bytes(b"pixels")
+            results[info.number] = PageResult(
+                markdown=f"Half {info.number}.\n\n![Figure]({prefix}{name})",
+                assets=[name],
+                report=PageReport(
+                    page=info.number,
+                    source=info.source,
+                    engine=engine,
+                    ocr=engine == "docling" and info.needs_ocr,
+                    vlm=engine == "vlm",
+                    provenance=[
+                        Provenance(
+                            page=info.number, label="picture", bbox=[10, 20, 30, 40]
+                        )
+                    ],
+                ),
+            )
+        return results
+
+    monkeypatch.setattr(Docling, "extract", extract)
+    return calls
 
 
 @pytest.mark.integration
@@ -244,3 +288,252 @@ def test_blank_page_has_no_inference(tmp_path: Path) -> None:
     assert result.pages[0].engine == "none"
     assert not result.pages[0].ocr
     assert not (tmp_path / "blank.assets").exists()
+
+
+def test_noncontiguous_native_pages(tmp_path: Path) -> None:
+    pdf = make_pdf(tmp_path / "book.pdf", 9)
+    paths = Paths(pdf, tmp_path / "selected.md")
+    progress: list[tuple[int, int, str]] = []
+    report = pipeline.convert(
+        paths,
+        Settings(pages="9,3,1,7-9,3"),
+        write_report=True,
+        progress=lambda *args: progress.append(args),
+    )
+    assert report.page_count == 9
+    assert report.selected_pages == [1, 3, 7, 8, 9]
+    assert [page.page for page in report.pages] == [1, 3, 7, 8, 9]
+    assert [page.provenance[0].page for page in report.pages] == [1, 3, 7, 8, 9]
+    assert [step[:2] for step in progress] == [(n, 5) for n in range(1, 6)]
+    markdown = paths.output.read_text()
+    for number in range(1, 10):
+        assert markdown.count(f"Unique page marker {number:04d}") == (
+            number in report.selected_pages
+        )
+
+
+@pytest.mark.parametrize("quality", ["fast", "best"])
+def test_docling_receives_separate_ranges_for_gaps(
+    tmp_path: Path, fake_docling: list[list[int]], quality: Quality
+) -> None:
+    pdf = make_pdf(tmp_path / "book.pdf", 9)
+    report = pipeline.convert(
+        Paths(pdf, tmp_path / "selected.md"),
+        Settings(pages="9,3,1,7-9,3", quality=quality, source="scan"),
+    )
+    assert fake_docling == [[1], [3], [7, 8, 9]]
+    assert [page.page for page in report.pages] == [1, 3, 7, 8, 9]
+
+
+@pytest.mark.parametrize("selection", ["", "1,", "3-1", "0", "2", "1-999999999"])
+def test_invalid_selection_precedes_inference(
+    pdf: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selection: str
+) -> None:
+    def fail(*args: object) -> None:
+        pytest.fail("Invalid selections must fail before inspection or inference.")
+
+    monkeypatch.setattr(Docling, "prepare_vlm", fail)
+    monkeypatch.setattr(Inspector, "inspect", fail)
+    paths = Paths(pdf, tmp_path / "selected.md")
+    paths.output.write_text("Previous output")
+    with pytest.raises(ConversionError, match="--pages"):
+        pipeline.convert(paths, Settings(pages=selection, quality="best"))
+    assert paths.output.read_text() == "Previous output"
+
+
+@pytest.mark.parametrize("quality", ["fast", "best"])
+def test_split_order_provenance_and_assets(
+    tmp_path: Path, fake_docling: list[list[int]], quality: Quality
+) -> None:
+    pdf = make_spread(tmp_path / "spread.pdf", 4)
+    paths = Paths(pdf, tmp_path / "chapter.md")
+    progress: list[tuple[int, int, str]] = []
+    report = pipeline.convert(
+        paths,
+        Settings(pages="4,2", split="always", quality=quality),
+        write_report=True,
+        progress=lambda *args: progress.append(args),
+    )
+    assert fake_docling == [[1, 2, 3, 4]]
+    assert [(page.page, page.half) for page in report.pages] == [
+        (2, "left"),
+        (2, "right"),
+        (4, "left"),
+        (4, "right"),
+    ]
+    assert [page.crop for page in report.pages] == [
+        [0, 0, 200, 200],
+        [200, 0, 400, 200],
+    ] * 2
+    assert [page.provenance[0].page for page in report.pages] == [2, 2, 4, 4]
+    assert [page.provenance[0].bbox for page in report.pages] == [
+        [10, 20, 30, 40],
+        [210, 20, 230, 40],
+    ] * 2
+    extraction_progress = [step for step in progress if step[0]]
+    assert [step[:2] for step in extraction_progress] == [(n, 4) for n in range(1, 5)]
+    assert "Page 2 left" in extraction_progress[0][2]
+    assert "Page 4 right" in extraction_progress[-1][2]
+    markdown = paths.output.read_text()
+    assert [markdown.index(f"Half {n}.") for n in range(1, 5)] == sorted(
+        markdown.index(f"Half {n}.") for n in range(1, 5)
+    )
+    assert len(list(paths.assets.iterdir())) == 4
+    saved = json.loads(paths.report.read_text())
+    assert saved["selected_pages"] == [2, 4]
+    assert saved["settings"]["split"] == "always"
+    assert saved["pages"][1]["crop"] == [200, 0, 400, 200]
+
+
+@pytest.mark.parametrize("split", ["none", "always"])
+def test_resume_noncontiguous_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_docling: list[list[int]],
+    split: Split,
+) -> None:
+    pdf = make_spread(tmp_path / "spread.pdf", 17)
+    paths = Paths(pdf, tmp_path / "chapter.md")
+    selection = list(range(1, 18, 2))
+    settings = Settings(
+        pages=",".join(map(str, selection)), split=split, engine="docling"
+    )
+    extract = Docling.extract
+
+    def interrupt(
+        self: Docling,
+        infos: list[PageInfo],
+        engine: str,
+        assets: Path,
+        prefix: str,
+    ) -> dict[int, PageResult]:
+        if (split == "none" and infos[0].number == 17) or (
+            split == "always" and fake_docling
+        ):
+            raise KeyboardInterrupt
+        return extract(self, infos, engine, assets, prefix)
+
+    monkeypatch.setattr(Docling, "extract", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        pipeline.convert(paths, settings)
+    checkpoint = json.loads(next(paths.work.glob("*/chunk-*.json")).read_text())
+    assert len(checkpoint["pages"]) == (16 if split == "always" else 8)
+    assert not paths.output.exists()
+    monkeypatch.setattr(Docling, "extract", extract)
+    report = pipeline.convert(paths, settings)
+    assert report.resumed_pages == 8
+    assert report.selected_pages == selection
+    assert len(report.pages) == (18 if split == "always" else 9)
+    assert len(fake_docling) == (2 if split == "always" else 9)
+    assert not paths.work.exists()
+
+
+@pytest.mark.parametrize("damage", ["missing", "duplicate", "reversed"])
+def test_split_checkpoint_requires_both_halves(
+    tmp_path: Path, fake_docling: list[list[int]], damage: str
+) -> None:
+    paths = Paths(make_spread(tmp_path / "spread.pdf"), tmp_path / "chapter.md")
+    settings = Settings(split="always")
+
+    def stop(*args: object) -> None:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        pipeline.convert(paths, settings, progress=stop)
+    checkpoint = next(paths.work.glob("*/chunk-*.json"))
+    saved = json.loads(checkpoint.read_text())
+    if damage == "missing":
+        saved["pages"].pop()
+    elif damage == "duplicate":
+        saved["pages"][1] = saved["pages"][0]
+    else:
+        saved["pages"].reverse()
+    checkpoint.write_text(json.dumps(saved))
+    report = pipeline.convert(paths, settings)
+    assert report.resumed_pages == 0
+    assert fake_docling == [[1, 2], [1, 2]]
+
+
+@pytest.mark.parametrize(
+    "settings", [Settings(pages="2"), Settings(pages="1", split="always")]
+)
+def test_selection_and_split_invalidate_checkpoints(
+    tmp_path: Path, fake_docling: list[list[int]], settings: Settings
+) -> None:
+    paths = Paths(make_spread(tmp_path / "spread.pdf", 2), tmp_path / "chapter.md")
+
+    def stop(*args: object) -> None:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        pipeline.convert(paths, Settings(pages="1"), progress=stop)
+    assert pipeline.convert(paths, settings).resumed_pages == 0
+
+
+def test_failed_half_preserves_all_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_docling: list[list[int]]
+) -> None:
+    paths = Paths(make_spread(tmp_path / "spread.pdf"), tmp_path / "chapter.md")
+    paths.output.write_text("Previous Markdown")
+    paths.report.write_text("Previous report")
+    paths.assets.mkdir()
+    (paths.assets / "previous.png").write_bytes(b"Previous figure")
+    extract = Docling.extract
+
+    def omit(
+        self: Docling,
+        infos: list[PageInfo],
+        engine: str,
+        assets: Path,
+        prefix: str,
+    ) -> dict[int, PageResult]:
+        results = extract(self, infos, engine, assets, prefix)
+        results.pop(2)
+        return results
+
+    monkeypatch.setattr(Docling, "extract", omit)
+    with pytest.raises(ConversionError, match="omitted"):
+        pipeline.convert(
+            paths, Settings(split="always", engine="docling"), write_report=True
+        )
+    assert paths.output.read_text() == "Previous Markdown"
+    assert paths.report.read_text() == "Previous report"
+    assert (paths.assets / "previous.png").read_bytes() == b"Previous figure"
+    assert not list(paths.work.glob("*/chunk-*.json"))
+
+
+def test_blank_half_has_no_inference(
+    tmp_path: Path, fake_docling: list[list[int]]
+) -> None:
+    from reportlab.pdfgen import canvas
+
+    pdf = tmp_path / "half-blank.pdf"
+    document = canvas.Canvas(str(pdf), pagesize=(400, 200))
+    document.drawString(20, 150, "Left research section.")
+    document.save()
+    report = pipeline.convert(
+        Paths(pdf, tmp_path / "output.md"), Settings(split="always")
+    )
+    assert fake_docling == [[1]]
+    assert report.pages[0].half == "left"
+    assert not report.pages[0].blank
+    assert report.pages[1].half == "right"
+    assert report.pages[1].blank
+    assert report.pages[1].engine == "none"
+    assert not report.pages[1].attempts
+
+
+def test_cli_page_options(tmp_path: Path) -> None:
+    pdf = make_pdf(tmp_path / "book.pdf", 3)
+    runner = CliRunner()
+    result = runner.invoke(app, [str(pdf), "--pages", "3,1", "--report"])
+    assert result.exit_code == 0, result.output
+    assert "[1/2] Page 1" in result.output
+    assert "[2/2] Page 3" in result.output
+    assert "--pages" in runner.invoke(app, [str(pdf), "--pages", "4"]).output
+    assert runner.invoke(app, [str(pdf), "--split", "bad"]).exit_code == 2
+    conflict = runner.invoke(
+        app, [str(pdf), "--split", "always", "--engine", "pdf-inspector"]
+    )
+    assert conflict.exit_code == 1
+    assert "cannot process" in conflict.output

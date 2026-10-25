@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+        with:
+          python-version-file: .python-version
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked dependencies
+        run: uv sync --locked --extra mcp
+
+      - name: Lint
+        run: uv run --locked --extra mcp ruff check .
+
+      - name: Check formatting
+        run: uv run --locked --extra mcp ruff format --check .
+
+      - name: Type check
+        run: uv run --locked --extra mcp ty check
+
+      - name: Test
+        env:
+          HF_HUB_OFFLINE: "1"
+        run: uv run --locked --extra mcp pytest
+
+      - name: Check docstring examples
+        env:
+          HF_HUB_OFFLINE: "1"
+        run: uv run --locked --extra mcp pytest --doctest-modules src tests
+
+      - name: Build package
+        run: uv build
