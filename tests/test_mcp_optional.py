@@ -1,5 +1,6 @@
 """The original CLI does not require the MCP extra."""
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -32,7 +33,7 @@ assert not any(name.startswith('fastmcp') for name in sys.modules)
     assert "Unique page marker 0001" in pdf.with_suffix(".md").read_text()
 
 
-def test_missing_extra_error() -> None:
+def test_missing_extra_error(tmp_path: Path) -> None:
     script = """
 import importlib.abc
 import sys
@@ -47,7 +48,11 @@ from pdf2md.mcp_server import main
 main()
 """
     result = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={**os.environ, "PDF2MD_MCP_ROOT": str(tmp_path)},
     )
     assert result.returncode == 1
     assert result.stdout == ""

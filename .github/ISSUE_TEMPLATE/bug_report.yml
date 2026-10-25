@@ -1,0 +1,67 @@
+name: Bug report
+description: Report a reproducible problem with pdf2md.
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report security vulnerabilities here.
+        Use the private channel in [SECURITY.md](https://github.com/maehr/pdf2md/blob/main/SECURITY.md).
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Current behavior
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include the exact command and a sample PDF if possible.
+      placeholder: |
+        1. Run `uv run --locked pdf2md paper.pdf`
+        2. Open `paper.md`
+        3. See the error
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: pdf2md version or commit
+      placeholder: 0.2.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: macOS version, Apple chip, Python version, and uv version.
+      placeholder: macOS 15, M2, Python 3.12.8, uv 0.8.0
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or report
+      description: Remove private content before you paste logs or reports.
+      render: shell
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I removed private content from logs and attachments.
+          required: true
+        - label: This report is not a security vulnerability.
+          required: true

@@ -574,7 +574,9 @@ def test_process_wide_busy_lock(
 
 
 def test_startup_root_and_stdio(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     with pytest.raises(FileNotFoundError):
         mcp_server.create_server(tmp_path / "missing")
@@ -595,9 +597,12 @@ def test_startup_root_and_stdio(
     monkeypatch.setattr(mcp_server, "create_server", create)
     monkeypatch.delenv("PDF2MD_MCP_ROOT", raising=False)
     monkeypatch.chdir(tmp_path)
-    mcp_server.main()
-    assert seen == [tmp_path, "stdio"]
-    seen.clear()
+    with pytest.raises(SystemExit, match="1"):
+        mcp_server.main()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "PDF2MD_MCP_ROOT must be set" in captured.err
+    assert seen == []
     monkeypatch.setenv("PDF2MD_MCP_ROOT", str(tmp_path / "root"))
     mcp_server.main()
     assert seen == [tmp_path / "root", "stdio"]
