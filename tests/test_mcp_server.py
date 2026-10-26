@@ -13,7 +13,12 @@ import pytest
 from conftest import make_pdf, page_numbers
 
 from pdf2md import __version__, mcp_server
-from pdf2md.core import page_marker
+from pdf2md.core import (
+    FIDELITY_MISSING_WARNING,
+    FIDELITY_ORDER_WARNING,
+    SPLIT_WORD_WARNING,
+    page_marker,
+)
 from pdf2md.engines import Inspector
 from pdf2md.models import CHUNK_SIZE, PageInfo, Paths, Settings
 
@@ -61,6 +66,8 @@ def test_tool_schemas(tmp_path: Path) -> None:
             assert (
                 convert.output_schema["properties"]["conversion_id"]["type"] == "string"
             )
+            review = convert.output_schema["properties"]["needs_review"]
+            assert review["type"] == "boolean"
             read = tools["read_markdown"]
             assert read.annotations.read_only_hint is True
             assert read.input_schema["properties"]["max_bytes"]["default"] == 16384
@@ -97,6 +104,7 @@ def test_conversion_and_read(pdf: Path, tmp_path: Path, custom: bool) -> None:
     assert summary["assets_directory"] is None
     assert summary["page_count"] == 1
     assert summary["resumed_pages"] == 0
+    assert summary["needs_review"] is False
     assert summary["seconds"] >= 0
     report = json.loads(output.with_suffix(".report.json").read_text())
     assert report["schema_version"] == 2
@@ -187,6 +195,59 @@ def test_custom_assets_and_warning_limit(
     assert summary["warnings_total"] == 23
     assert summary["warnings"] == ["first"] + [f"warning {i}" for i in range(19)]
     assert summary["warnings_omitted"] == 3
+
+
+@pytest.mark.parametrize(
+    ("warning", "expected"),
+    [
+        (FIDELITY_MISSING_WARNING, True),
+        (SPLIT_WORD_WARNING, True),
+        (
+            "Possible paragraph continuation at the page boundary. Verify the source.",
+            False,
+        ),
+    ],
+)
+def test_needs_review_summary(
+    pdf: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    warning: str,
+    expected: bool,
+) -> None:
+    original = mcp_server.convert
+
+    def convert(paths: Paths, settings: Settings, *, write_report: bool = False):
+        report = original(paths, settings, write_report=write_report)
+        report.pages[0].warnings = [warning]
+        return report
+
+    monkeypatch.setattr(mcp_server, "convert", convert)
+    summary = asyncio.run(
+        call(mcp_server.create_server(tmp_path), "convert_pdf", {"input_pdf": str(pdf)})
+    )
+    assert summary["needs_review"] is expected
+
+
+def test_needs_review_after_warning_limit(
+    pdf: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = mcp_server.convert
+
+    def convert(paths: Paths, settings: Settings, *, write_report: bool = False):
+        report = original(paths, settings, write_report=write_report)
+        report.warnings = [f"warning {i}" for i in range(20)]
+        report.warnings.append(FIDELITY_ORDER_WARNING)
+        return report
+
+    monkeypatch.setattr(mcp_server, "convert", convert)
+    summary = asyncio.run(
+        call(mcp_server.create_server(tmp_path), "convert_pdf", {"input_pdf": str(pdf)})
+    )
+    assert summary["warnings_total"] == 21
+    assert FIDELITY_ORDER_WARNING not in summary["warnings"]
+    assert summary["warnings_omitted"] == 1
+    assert summary["needs_review"] is True
 
 
 def test_unicode_pagination(

@@ -165,7 +165,7 @@ The server exposes three tools:
 
 | Tool | Behavior |
 | --- | --- |
-| `convert_pdf` | Converts one local PDF and returns paths, page counts, timing, and bounded warnings. |
+| `convert_pdf` | Converts one local PDF and returns paths, page counts, timing, bounded warnings, and `needs_review`. |
 | `read_markdown` | Reads up to 65,536 UTF-8 bytes from a successful conversion. |
 | `save_tts_markdown` | Saves reviewed Markdown as `<name>.tts.md` next to the extracted Markdown. |
 
@@ -203,6 +203,33 @@ The conversion output directory must still exist.
 Existing TTS copies require `overwrite=True`.
 The reviewed text must not exceed 16 MiB.
 The tool writes the new file atomically.
+
+### Review for narration
+
+`convert_pdf` returns `needs_review`.
+The value is true when a warning reports missing, misordered, or split text.
+Three warnings set `needs_review`:
+
+- `Extraction differs from native text. Verify missing content.`
+- `Reading order differs from native text. Verify the source.`
+- `Possible split word after a hyphen. Verify the source.`
+
+Other warnings, such as page-boundary and image warnings, do not set `needs_review`.
+
+If `needs_review` is true, review the Markdown before narration:
+
+1. Read the whole Markdown with `read_markdown`, as described above.
+2. Check the text for the reported problem.
+3. Correct the text where needed. Keep the page markers.
+4. Save the reviewed text with `save_tts_markdown`.
+
+Review needs no second conversion.
+Both tools reuse the `conversion_id` from `convert_pdf`.
+Conversion IDs expire when the server process exits.
+After a restart, convert the PDF again with `overwrite=True`.
+
+For narration, pass the `output_markdown` from `convert_pdf` when `needs_review` is false.
+Otherwise, pass the `output_markdown` from `save_tts_markdown`.
 
 ### Client configuration
 
