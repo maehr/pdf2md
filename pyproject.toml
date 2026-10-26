@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-mcp = ["fastmcp==4.1.3"]
+mcp = ["fastmcp==4.1.4"]
 
 [project.scripts]
 pdf2md = "pdf2md.cli:app"
@@ -55,5 +55,5 @@ dev = [
     "pytest-cov==7.1.0",
     "reportlab==5.1.0",
     "ruff==0.17.2",
-    "ty==0.0.91",
+    "ty==0.0.92",
 ]
