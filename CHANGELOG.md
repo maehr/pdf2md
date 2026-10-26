@@ -8,6 +8,8 @@ This file records changes in each release.
 
 - The `--pages` option selects physical PDF pages and ranges.
 - The `--split always` option divides facing-page scans into left and right halves.
+- Markdown includes silent physical page markers by default.
+- `--no-preserve-pages` and MCP `preserve_pages=false` omit the page markers.
 - Reports include `selected_pages`, `page_count`, `half`, and `crop`.
 - The repository includes the AGPL-3.0-or-later license.
 - `SECURITY.md` describes supported versions and private vulnerability reporting.

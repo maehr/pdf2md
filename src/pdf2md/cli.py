@@ -32,11 +32,19 @@ def main(
     split: Annotated[
         Split, typer.Option(help="Split selected pages into left and right halves.")
     ] = "none",
+    preserve_pages: Annotated[
+        bool, typer.Option(help="Insert silent physical page markers.")
+    ] = True,
     report: Annotated[bool, typer.Option(help="Write a JSON report.")] = False,
 ) -> None:
     """Convert a PDF into local Markdown, figures, and optional provenance."""
     settings = Settings(
-        source=source, quality=quality, engine=engine, pages=pages, split=split
+        source=source,
+        quality=quality,
+        engine=engine,
+        pages=pages,
+        split=split,
+        preserve_pages=preserve_pages,
     )
 
     def progress(page: int, count: int, label: str) -> None:

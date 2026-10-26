@@ -8,6 +8,7 @@ from pdf2md.core import (
     classify_source,
     fidelity_warnings,
     markdown_warnings,
+    page_marker,
     repeated_margins,
     safe_asset,
     select_pages,
@@ -154,6 +155,12 @@ def test_assets_and_paths() -> None:
     assert paths.assets == Path("output/book.assets")
     assert paths.report == Path("output/book.report.json")
     assert paths.work == Path("output/.book.md.pdf2md-work")
+
+
+def test_page_marker_format() -> None:
+    assert page_marker(14) == "<!-- pdf-page: 14 -->"
+    assert page_marker(14, "left") == "<!-- pdf-page: 14; half: left -->"
+    assert page_marker(14, "right") == "<!-- pdf-page: 14; half: right -->"
 
 
 def test_page_coverage() -> None:

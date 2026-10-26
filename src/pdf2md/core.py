@@ -6,7 +6,14 @@ from collections import Counter
 from collections.abc import Iterable
 from pathlib import PurePosixPath
 
-from pdf2md.models import ConversionError, PageInfo, PageResult, Settings, Split
+from pdf2md.models import (
+    ConversionError,
+    Half,
+    PageInfo,
+    PageResult,
+    Settings,
+    Split,
+)
 
 
 def select_pages(selection: str | None, count: int) -> list[int]:
@@ -26,6 +33,18 @@ def select_pages(selection: str | None, count: int) -> list[int]:
             raise ConversionError(f"--pages must stay within physical pages 1-{count}.")
         numbers.update(range(start, end + 1))
     return sorted(numbers)
+
+
+def page_marker(number: int, half: Half | None = None) -> str:
+    """Format a silent physical page marker for assembled Markdown.
+
+    >>> page_marker(14)
+    '<!-- pdf-page: 14 -->'
+    >>> page_marker(14, "left")
+    '<!-- pdf-page: 14; half: left -->'
+    """
+    suffix = f"; half: {half}" if half else ""
+    return f"<!-- pdf-page: {number}{suffix} -->"
 
 
 def text_warnings(text: str) -> list[str]:
