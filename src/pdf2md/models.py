@@ -25,6 +25,7 @@ class Settings(BaseModel):
     engine: Engine = "auto"
     pages: str | None = None
     split: Split = "none"
+    preserve_pages: bool = True
 
 
 @dataclass(frozen=True)

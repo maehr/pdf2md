@@ -324,11 +324,13 @@ def create_server(root: Path) -> "FastMCP":
         source: Source = "auto",
         quality: Quality = "fast",
         engine: Engine = "auto",
+        preserve_pages: bool = True,
         overwrite: bool = False,
     ) -> ConversionSummary:
         """Convert one local PDF and write Markdown, assets, and a JSON report.
 
         Relative paths start at the configured root.
+        preserve_pages=True inserts silent physical page markers.
         overwrite=True can replace existing output files.
         Client timeouts do not guarantee cancellation.
         """
@@ -342,7 +344,12 @@ def create_server(root: Path) -> "FastMCP":
                 else str(input_path.with_suffix(".md"))
             )
             paths = Paths(input_path, output_path)
-            settings = Settings(source=source, quality=quality, engine=engine)
+            settings = Settings(
+                source=source,
+                quality=quality,
+                engine=engine,
+                preserve_pages=preserve_pages,
+            )
             _validate_paths(policy, paths, overwrite)
             # The stdio transport captures its protocol stream before tool execution.
             # Keep engine diagnostics away from that stream.
