@@ -13,7 +13,12 @@ import pytest
 from conftest import make_pdf, page_numbers
 
 from pdf2md import __version__, mcp_server
-from pdf2md.core import page_marker
+from pdf2md.core import (
+    FIDELITY_MISSING_WARNING,
+    FIDELITY_ORDER_WARNING,
+    SPLIT_WORD_WARNING,
+    page_marker,
+)
 from pdf2md.engines import Inspector
 from pdf2md.models import CHUNK_SIZE, PageInfo, Paths, Settings
 
@@ -61,6 +66,8 @@ def test_tool_schemas(tmp_path: Path) -> None:
             assert (
                 convert.output_schema["properties"]["conversion_id"]["type"] == "string"
             )
+            review = convert.output_schema["properties"]["needs_review"]
+            assert review["type"] == "boolean"
             read = tools["read_markdown"]
             assert read.annotations.read_only_hint is True
             assert read.input_schema["properties"]["max_bytes"]["default"] == 16384
@@ -97,6 +104,7 @@ def test_conversion_and_read(pdf: Path, tmp_path: Path, custom: bool) -> None:
     assert summary["assets_directory"] is None
     assert summary["page_count"] == 1
     assert summary["resumed_pages"] == 0
+    assert summary["needs_review"] is False
     assert summary["seconds"] >= 0
     report = json.loads(output.with_suffix(".report.json").read_text())
     assert report["schema_version"] == 2
@@ -187,6 +195,92 @@ def test_custom_assets_and_warning_limit(
     assert summary["warnings_total"] == 23
     assert summary["warnings"] == ["first"] + [f"warning {i}" for i in range(19)]
     assert summary["warnings_omitted"] == 3
+
+
+@pytest.mark.parametrize(
+    ("warning", "expected"),
+    [
+        (FIDELITY_MISSING_WARNING, True),
+        (SPLIT_WORD_WARNING, True),
+        (
+            "Possible paragraph continuation at the page boundary. Verify the source.",
+            False,
+        ),
+    ],
+)
+def test_needs_review_summary(
+    pdf: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    warning: str,
+    expected: bool,
+) -> None:
+    original = mcp_server.convert
+
+    def convert(paths: Paths, settings: Settings, *, write_report: bool = False):
+        report = original(paths, settings, write_report=write_report)
+        report.pages[0].warnings = [warning]
+        return report
+
+    monkeypatch.setattr(mcp_server, "convert", convert)
+    summary = asyncio.run(
+        call(mcp_server.create_server(tmp_path), "convert_pdf", {"input_pdf": str(pdf)})
+    )
+    assert summary["needs_review"] is expected
+
+
+def test_needs_review_after_warning_limit(
+    pdf: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = mcp_server.convert
+
+    def convert(paths: Paths, settings: Settings, *, write_report: bool = False):
+        report = original(paths, settings, write_report=write_report)
+        report.warnings = [f"warning {i}" for i in range(20)]
+        report.warnings.append(FIDELITY_ORDER_WARNING)
+        return report
+
+    monkeypatch.setattr(mcp_server, "convert", convert)
+    summary = asyncio.run(
+        call(mcp_server.create_server(tmp_path), "convert_pdf", {"input_pdf": str(pdf)})
+    )
+    assert summary["warnings_total"] == 21
+    assert FIDELITY_ORDER_WARNING not in summary["warnings"]
+    assert summary["warnings_omitted"] == 1
+    assert summary["needs_review"] is True
+
+
+def test_handoff_paths_are_absolute_inside_root(tmp_path: Path) -> None:
+    root = tmp_path.resolve()
+    docs = tmp_path / "my docs"
+    docs.mkdir()
+    make_pdf(docs / "my paper.pdf")
+    server = mcp_server.create_server(tmp_path)
+    summary = asyncio.run(
+        call(server, "convert_pdf", {"input_pdf": "my docs/my paper.pdf"})
+    )
+    saved = asyncio.run(
+        call(
+            server,
+            "save_tts_markdown",
+            {
+                "conversion_id": summary["conversion_id"],
+                "markdown": "Reviewed text.\n",
+            },
+        )
+    )
+    paths = {
+        "input_pdf": summary["input_pdf"],
+        "output_markdown": summary["output_markdown"],
+        "report_json": summary["report_json"],
+        "tts_markdown": saved["output_markdown"],
+    }
+    for name, value in paths.items():
+        assert Path(value).is_absolute(), name
+        assert Path(value).is_relative_to(root), name
+        assert "my docs" in value, name
+    assert Path(paths["output_markdown"]).name == "my paper.md"
+    assert Path(paths["tts_markdown"]).name == "my paper.tts.md"
 
 
 def test_unicode_pagination(

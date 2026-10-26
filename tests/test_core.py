@@ -3,11 +3,16 @@ from pathlib import Path
 import pytest
 
 from pdf2md.core import (
+    FIDELITY_MISSING_WARNING,
+    FIDELITY_ORDER_WARNING,
+    REVIEW_WARNINGS,
+    SPLIT_WORD_WARNING,
     boundary_warnings,
     choose_engine,
     classify_source,
     fidelity_warnings,
     markdown_warnings,
+    needs_review,
     page_marker,
     repeated_margins,
     safe_asset,
@@ -216,3 +221,52 @@ def test_conservative_margins() -> None:
     assert "References: Example (2026)." in result
     assert "Chapter" in strip_margins("Chapter\n\nBody.", set(), {"Chapter"})
     assert "body Book" in strip_margins("body Book", {"Book"}, {"Book"})
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("The exam- ple is clear.", True),
+        ("A pre- and post-processing step.", False),
+        ("A pre- or post-processing step.", False),
+        ("A pre- und post-processing step.", False),
+        ("A pre- oder post-processing step.", False),
+        ("A well-known method.", False),
+        ("A Model- Based method.", False),
+    ],
+)
+def test_split_words(text: str, expected: bool) -> None:
+    assert (SPLIT_WORD_WARNING in markdown_warnings(text)) is expected
+
+
+def test_fidelity_messages_are_review_warnings() -> None:
+    source = " ".join(f"token{n}" for n in range(30))
+    reversed_source = " ".join(reversed(source.split()))
+    assert fidelity_warnings(source, "") == [FIDELITY_MISSING_WARNING]
+    assert fidelity_warnings(source, reversed_source) == [FIDELITY_ORDER_WARNING]
+    assert REVIEW_WARNINGS == {
+        FIDELITY_MISSING_WARNING,
+        FIDELITY_ORDER_WARNING,
+        SPLIT_WORD_WARNING,
+    }
+
+
+@pytest.mark.parametrize("warning", sorted(REVIEW_WARNINGS))
+def test_review_warnings_need_review(warning: str) -> None:
+    assert needs_review([warning])
+
+
+@pytest.mark.parametrize(
+    "warning",
+    [
+        "Markdown has an unclosed code fence.",
+        "An image has no extracted pixels.",
+        "Image link is not a local extracted asset.",
+        "Possible paragraph continuation at the page boundary. Verify the source.",
+        "Possible table continuation at the page boundary. Verify the source.",
+        "Docling reported partial success. Verify this page.",
+    ],
+)
+def test_other_warnings_skip_review(warning: str) -> None:
+    assert not needs_review([warning])
+    assert not needs_review([])

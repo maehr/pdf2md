@@ -15,6 +15,17 @@ from pdf2md.models import (
     Split,
 )
 
+FIDELITY_MISSING_WARNING = (
+    "Extraction differs from native text. Verify missing content."
+)
+FIDELITY_ORDER_WARNING = "Reading order differs from native text. Verify the source."
+SPLIT_WORD_WARNING = "Possible split word after a hyphen. Verify the source."
+REVIEW_WARNINGS: frozenset[str] = frozenset(
+    {FIDELITY_MISSING_WARNING, FIDELITY_ORDER_WARNING, SPLIT_WORD_WARNING}
+)
+_SPLIT_WORD = re.compile(r"\w+- (\w+)")
+_SUSPENDED_WORDS = frozenset({"and", "or", "und", "oder"})
+
 
 def select_pages(selection: str | None, count: int) -> list[int]:
     """Normalize physical page numbers before any inference."""
@@ -150,10 +161,14 @@ def validate_text(markdown: str, page: PageInfo) -> None:
 
 
 def markdown_warnings(markdown: str) -> list[str]:
-    """Flag syntax without editing a transcription.
+    """Flag syntax and split words without editing a transcription.
 
     >>> markdown_warnings("```python\\nx = 1\\n")
     ['Markdown has an unclosed code fence.']
+    >>> markdown_warnings("The exam- ple is clear.")
+    ['Possible split word after a hyphen. Verify the source.']
+    >>> markdown_warnings("A pre- and post-processing step.")
+    []
     """
     warnings = []
     fence: str | None = None
@@ -170,6 +185,11 @@ def markdown_warnings(markdown: str) -> list[str]:
         warnings.append("Markdown has an unclosed code fence.")
     if "<!-- image -->" in markdown:
         warnings.append("An image has no extracted pixels.")
+    if any(
+        match[1][0].islower() and match[1] not in _SUSPENDED_WORDS
+        for match in _SPLIT_WORD.finditer(markdown)
+    ):
+        warnings.append(SPLIT_WORD_WARNING)
     return warnings
 
 
@@ -186,17 +206,26 @@ def fidelity_warnings(native: str, markdown: str) -> list[str]:
     common = sum((Counter(source) & Counter(extracted)).values())
     warnings = []
     if common / len(source) < 0.8:
-        warnings.append("Extraction differs from native text. Verify missing content.")
+        warnings.append(FIDELITY_MISSING_WARNING)
     unique = {word for word, count in Counter(source).items() if count == 1}
     positions = {word: index for index, word in enumerate(source) if word in unique}
     anchors = [positions[word] for word in extracted if word in positions]
     if len(anchors) >= 10:
         inversions = sum(a > b for a, b in zip(anchors, anchors[1:], strict=False))
         if inversions / (len(anchors) - 1) > 0.15:
-            warnings.append(
-                "Reading order differs from native text. Verify the source."
-            )
+            warnings.append(FIDELITY_ORDER_WARNING)
     return warnings
+
+
+def needs_review(warnings: Iterable[str]) -> bool:
+    """Require review for missing, misordered, or split text.
+
+    >>> needs_review([SPLIT_WORD_WARNING])
+    True
+    >>> needs_review(["An image has no extracted pixels."])
+    False
+    """
+    return any(warning in REVIEW_WARNINGS for warning in warnings)
 
 
 def safe_asset(name: str) -> bool:

@@ -10,6 +10,37 @@ Markdown includes silent physical page markers by default.
 
 See the [changelog](CHANGELOG.md) for release notes.
 
+## For coding agents
+
+Call the command line interface (CLI) to convert a PDF.
+Do not import `pdf2md` modules.
+Do not write a PDF parser.
+Do not add OCR.
+
+Run these two commands in order:
+
+```sh
+pdf2md "my paper.pdf"
+simple-tts convert "my paper.md" --format m4b --yes
+```
+
+In a checkout of this repository, run `uv sync --locked` once.
+Then use `uv run --locked pdf2md "my paper.pdf"` instead of `pdf2md`.
+
+The CLI follows this contract:
+
+- Convert one PDF for each run.
+- Stdout contains the absolute output path and one newline only.
+- Stderr contains progress, warnings, and errors.
+- Exit code 0 means success.
+- Exit code 1 means a conversion error.
+- Exit code 2 means a usage error.
+- Exit code 130 means an interrupt.
+- The default output is `my paper.md`, beside `my paper.pdf`.
+- Page markers are HTML comments. `simple-tts` does not speak them.
+
+Install `simple-tts` from <https://github.com/maehr/simple-tts>.
+
 ## Requirements
 
 - A Mac with Apple Silicon and macOS.
@@ -134,7 +165,7 @@ The server exposes three tools:
 
 | Tool | Behavior |
 | --- | --- |
-| `convert_pdf` | Converts one local PDF and returns paths, page counts, timing, and bounded warnings. |
+| `convert_pdf` | Converts one local PDF and returns paths, page counts, timing, bounded warnings, and `needs_review`. |
 | `read_markdown` | Reads up to 65,536 UTF-8 bytes from a successful conversion. |
 | `save_tts_markdown` | Saves reviewed Markdown as `<name>.tts.md` next to the extracted Markdown. |
 
@@ -172,6 +203,33 @@ The conversion output directory must still exist.
 Existing TTS copies require `overwrite=True`.
 The reviewed text must not exceed 16 MiB.
 The tool writes the new file atomically.
+
+### Review for narration
+
+`convert_pdf` returns `needs_review`.
+The value is true when a warning reports missing, misordered, or split text.
+Three warnings set `needs_review`:
+
+- `Extraction differs from native text. Verify missing content.`
+- `Reading order differs from native text. Verify the source.`
+- `Possible split word after a hyphen. Verify the source.`
+
+Other warnings, such as page-boundary and image warnings, do not set `needs_review`.
+
+If `needs_review` is true, review the Markdown before narration:
+
+1. Read the whole Markdown with `read_markdown`, as described above.
+2. Check the text for the reported problem.
+3. Correct the text where needed. Keep the page markers.
+4. Save the reviewed text with `save_tts_markdown`.
+
+Review needs no second conversion.
+Both tools reuse the `conversion_id` from `convert_pdf`.
+Conversion IDs expire when the server process exits.
+After a restart, convert the PDF again with `overwrite=True`.
+
+For narration, pass the `output_markdown` from `convert_pdf` when `needs_review` is false.
+Otherwise, pass the `output_markdown` from `save_tts_markdown`.
 
 ### Client configuration
 
@@ -226,6 +284,54 @@ Standard output contains only MCP protocol messages.
 Long conversions remain synchronous tool calls.
 Client timeouts do not guarantee cancellation.
 This release provides no background tasks or progress notifications.
+
+### Hand off to simple-tts
+
+Use `pdf2md` and `simple-tts` with one shared workspace directory.
+Run both servers on the same machine.
+Replace each placeholder with an absolute path.
+
+```json
+{
+  "mcpServers": {
+    "pdf2md": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/absolute/path/to/pdf2md",
+        "--locked",
+        "--extra",
+        "mcp",
+        "pdf2md-mcp"
+      ],
+      "env": {
+        "PDF2MD_MCP_ROOT": "/absolute/path/to/workspace"
+      }
+    },
+    "simple-tts": {
+      "command": "/absolute/path/to/venv/bin/simple-tts",
+      "args": ["mcp", "--workspace", "/absolute/path/to/workspace"]
+    }
+  }
+}
+```
+
+The `simple-tts` executable must use an environment that contains `simple-tts[mcp]`.
+See the [simple-tts installation guide](https://github.com/maehr/simple-tts#installation) for setup.
+See [Client configuration](#client-configuration) for the optional `HF_HUB_OFFLINE` setting.
+
+Use this recipe to create audio from a PDF:
+
+1. Call `convert_pdf(input_pdf="papers/my paper.pdf")`.
+2. If `needs_review` is true, review the text with `read_markdown`.
+3. If `needs_review` is true, save the reviewed text with `save_tts_markdown`.
+4. Call `start_conversion(input_file=<path>, format="m4b")`, where `<path>` is the latest `output_markdown`.
+5. Poll `get_conversion(job_id)` until the job finishes.
+
+Paths are local to the machine that runs the servers.
+A client on another machine cannot open these paths.
+Pass the paths between the servers, not the file content.
 
 ## Engine selection
 

@@ -17,6 +17,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict
 
 from pdf2md import __version__
+from pdf2md.core import needs_review
 from pdf2md.models import Engine, Paths, Quality, Settings, Source
 from pdf2md.pipeline import convert
 
@@ -45,6 +46,7 @@ class ConversionSummary(BaseModel):
     warnings_total: int
     warnings: list[str]
     warnings_omitted: int
+    needs_review: bool
 
 
 class MarkdownChunk(BaseModel):
@@ -305,6 +307,8 @@ def create_server(root: Path) -> "FastMCP":
             "All conversion and inference run locally. "
             "Read results with read_markdown and next_offset_bytes. "
             "Save reviewed Markdown with save_tts_markdown. "
+            "For narration, pass output_markdown to a TTS tool. "
+            "If needs_review is true, review the text first. "
             "Conversion IDs expire when this server process exits."
         ),
         mask_error_details=True,
@@ -330,8 +334,13 @@ def create_server(root: Path) -> "FastMCP":
         """Convert one local PDF and write Markdown, assets, and a JSON report.
 
         Relative paths start at the configured root.
+        Returned paths are local to the server machine.
         preserve_pages=True inserts silent physical page markers.
         overwrite=True can replace existing output files.
+        Use this tool for Markdown and for narration.
+        For narration, pass output_markdown to a TTS tool.
+        If needs_review is true, review the text with read_markdown first.
+        Then save the reviewed text with save_tts_markdown and pass that path instead.
         Client timeouts do not guarantee cancellation.
         """
         if not _CONVERSION_LOCK.acquire(blocking=False):
@@ -378,6 +387,7 @@ def create_server(root: Path) -> "FastMCP":
                 warnings_total=len(warnings),
                 warnings=warnings[:20],
                 warnings_omitted=max(0, len(warnings) - 20),
+                needs_review=needs_review(warnings),
             )
             registry[conversion_id] = _Published(output_path, identity)
             return summary
@@ -434,6 +444,7 @@ def create_server(root: Path) -> "FastMCP":
         """Save agent-reviewed Markdown as <name>.tts.md next to the extraction.
 
         The tool never changes the extracted Markdown.
+        Returned paths are local to the server machine.
         overwrite=True can replace an existing TTS copy.
         The server does not rewrite, summarize, or normalize the text.
         """
