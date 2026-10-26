@@ -21,7 +21,6 @@ from pdf2md.core import (
     choose_engine,
     fidelity_warnings,
     markdown_warnings,
-    page_marker,
     safe_asset,
     select_pages,
     validate_pages,
@@ -361,8 +360,7 @@ def run(
         docling.prepare_vlm()
     identity = {
         "input": digest,
-        # Page markers are assembled after extraction and do not affect checkpoints.
-        "settings": settings.model_dump(exclude={"preserve_pages"}),
+        "settings": settings.model_dump(),
         "versions": installed,
         "model_revision": docling.model_revision,
         "chunk_size": CHUNK_SIZE,
@@ -404,8 +402,6 @@ def run(
             for page in results:
                 number = page.report.page
                 page.report.warnings.extend(boundary_warnings(previous, page.markdown))
-                if settings.preserve_pages:
-                    markdown_file.write(page_marker(number, page.report.half) + "\n\n")
                 if page.markdown.strip():
                     markdown_file.write(page.markdown.strip() + "\n\n")
                     previous = page.markdown

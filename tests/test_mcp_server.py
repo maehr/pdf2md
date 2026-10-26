@@ -51,7 +51,6 @@ def test_tool_schemas(tmp_path: Path) -> None:
             ):
                 assert properties[field]["enum"] == values
                 assert properties[field]["default"] == default
-            assert properties["preserve_pages"]["default"] is True
             assert properties["overwrite"]["default"] is False
             assert properties["output_markdown"]["default"] is None
             assert convert.annotations.read_only_hint is False
@@ -104,7 +103,6 @@ def test_conversion_and_read(pdf: Path, tmp_path: Path, custom: bool) -> None:
         call(server, "read_markdown", {"conversion_id": summary["conversion_id"]})
     )
     assert "Unique page marker 0001" in chunk["markdown"]
-    assert "<!-- pdf-page: 1 -->" in chunk["markdown"]
     assert chunk["markdown"].encode() == output.read_bytes()
     assert chunk["next_offset_bytes"] == output.stat().st_size
     assert chunk["eof"]
@@ -597,13 +595,7 @@ def test_private_registry_and_empty_markdown(tmp_path: Path) -> None:
     document.showPage()
     document.save()
     server = mcp_server.create_server(tmp_path)
-    summary = asyncio.run(
-        call(
-            server,
-            "convert_pdf",
-            {"input_pdf": str(pdf), "preserve_pages": False},
-        )
-    )
+    summary = asyncio.run(call(server, "convert_pdf", {"input_pdf": str(pdf)}))
     chunk = asyncio.run(
         call(
             server,
@@ -614,23 +606,6 @@ def test_private_registry_and_empty_markdown(tmp_path: Path) -> None:
     assert chunk["markdown"] == ""
     assert chunk["next_offset_bytes"] == 0
     assert chunk["eof"]
-    marked = asyncio.run(
-        call(
-            server,
-            "convert_pdf",
-            {"input_pdf": str(pdf), "output_markdown": "marked.md"},
-        )
-    )
-    marked_chunk = asyncio.run(
-        call(
-            server,
-            "read_markdown",
-            {"conversion_id": marked["conversion_id"]},
-        )
-    )
-    assert marked_chunk["markdown"] == "<!-- pdf-page: 1 -->\n\n"
-    report = json.loads(Path(marked["report_json"]).read_text())
-    assert report["settings"]["preserve_pages"] is True
     assert "Unknown or expired" in asyncio.run(
         error(
             mcp_server.create_server(tmp_path),
