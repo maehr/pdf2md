@@ -6,6 +6,7 @@ Convert one PDF into Markdown with local engines.
 Version 0.3.0 adds an MCP tool for agent-reviewed TTS Markdown.
 The default fast mode uses native text and Apple Vision optical character recognition (OCR) through Docling.
 Best mode uses the GraniteDocling vision language model (VLM) through MLX on Apple Silicon.
+Markdown includes silent physical page markers by default.
 
 See the [changelog](CHANGELOG.md) for release notes.
 
@@ -61,6 +62,7 @@ Custom output paths determine the asset and report names.
 | `--engine` | `auto`, `pdf-inspector`, `docling`, `vlm` | `auto` |
 | `--pages` | Single pages, inclusive ranges, or comma-separated selections | All pages |
 | `--split` | `none`, `always` | `none` |
+| `--preserve-pages`, `--no-preserve-pages` | Insert silent physical page markers | On |
 | `--report`, `--no-report` | Enable or disable the JSON report | Off |
 | `--help` | Show command help | Off |
 
@@ -84,6 +86,25 @@ Explicit `--engine pdf-inspector` cannot process split pages.
 Each half has a separate report record with its original page number, `half`, and `crop` rectangle.
 Crop rectangles and provenance boxes use PDF points on the displayed source page, with the origin at the top left.
 Rectangle values follow the order `[left, top, right, bottom]`.
+
+Markdown includes a silent page marker before each processed page.
+The marker records the 1-based physical PDF page:
+
+```markdown
+<!-- pdf-page: 14 -->
+```
+
+Split pages add the half:
+
+```markdown
+<!-- pdf-page: 14; half: left -->
+```
+
+Markers also appear before blank pages.
+Selected pages keep their original physical page numbers.
+The default output includes markers.
+Use `--no-preserve-pages` to omit them.
+Markers do not change extracted wording or restore running headers, footers, or printed page numbers.
 
 The command prints progress and warnings to standard error.
 It prints the output path to standard output after success.
@@ -117,10 +138,12 @@ The server exposes three tools:
 | `read_markdown` | Reads up to 65,536 UTF-8 bytes from a successful conversion. |
 | `save_tts_markdown` | Saves reviewed Markdown as `<name>.tts.md` next to the extracted Markdown. |
 
-`convert_pdf` accepts `input_pdf`, `output_markdown`, `source`, `quality`, `engine`, and `overwrite`.
+`convert_pdf` accepts `input_pdf`, `output_markdown`, `source`, `quality`, `engine`, `preserve_pages`, and `overwrite`.
 Source, quality, and engine values match the CLI options above.
 Relative paths start at the configured root.
 The default output replaces the input suffix with `.md`.
+`preserve_pages` defaults to `true` and inserts the page markers above.
+Set `preserve_pages` to `false` to omit them.
 The tool always writes a report with schema version 2.
 It returns at most 20 distinct warnings and counts omitted warnings.
 It preserves the existing pipeline, checkpoints, and atomic publication.
@@ -144,6 +167,7 @@ Use `save_tts_markdown` with the same conversion ID and the reviewed Markdown.
 The tool writes `<name>.tts.md` next to the extracted `<name>.md`.
 It never changes the extracted Markdown.
 The server does not rewrite, summarize, or normalize the text.
+Keep the page markers in the reviewed Markdown to retain citation locations.
 The conversion output directory must still exist.
 Existing TTS copies require `overwrite=True`.
 The reviewed text must not exceed 16 MiB.
@@ -245,8 +269,9 @@ HF_HUB_OFFLINE=1 uv run --locked pdf2md paper.pdf
 
 The engines supply document structure, tables, captions, and figures when available.
 The application preserves engine output without summarization.
-It removes confirmed running headers, footers, and page numbers.
+It removes confirmed running headers, footers, and printed page numbers.
 It preserves unconfirmed footer text, including references near the page edge.
+Page markers record physical PDF pages, not printed page numbers.
 It preserves ambiguous content and reports warnings.
 Native extraction also saves embedded images.
 

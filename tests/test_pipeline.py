@@ -3,13 +3,20 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import make_pdf, make_spread
+from conftest import (
+    PAGE_MARKER_PREFIX,
+    make_pdf,
+    make_spread,
+    page_markers,
+    page_numbers,
+)
 from typer.testing import CliRunner
 
 from pdf2md import pipeline
 from pdf2md.cli import app
 from pdf2md.engines import Docling, Inspector
 from pdf2md.models import (
+    CHUNK_SIZE,
     ConversionError,
     PageInfo,
     PageReport,
@@ -94,12 +101,27 @@ def test_resume_completed_chunks(
     assert len(list(paths.work.glob("*/chunk-*.json"))) == 1
     monkeypatch.setattr(Inspector, "inspect", original)
     result = pipeline.convert(paths, Settings(quality="fast"), write_report=True)
-    assert result.resumed_pages == 8
+    assert result.resumed_pages == CHUNK_SIZE
     assert [p.page for p in result.pages] == list(range(1, 18))
     text = paths.output.read_text()
     for number in range(1, 18):
         assert text.count(f"Unique page marker {number:04d}") == 1
     assert not paths.work.exists()
+
+
+def test_marker_toggle_reuses_checkpoints(tmp_path: Path) -> None:
+    pdf = make_pdf(tmp_path / "book.pdf", 17)
+    paths = Paths(pdf, tmp_path / "book.md")
+
+    def stop(page: int, count: int, label: str) -> None:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        pipeline.convert(paths, Settings(preserve_pages=False), progress=stop)
+    assert len(list(paths.work.glob("*/chunk-*.json"))) == 1
+    result = pipeline.convert(paths, Settings(preserve_pages=True), write_report=True)
+    assert result.resumed_pages == CHUNK_SIZE
+    assert page_numbers(paths.output.read_text()) == list(range(1, 18))
 
 
 def test_changed_settings_invalidate_cache(
@@ -290,13 +312,49 @@ def test_blank_page_has_no_inference(tmp_path: Path) -> None:
     assert not (tmp_path / "blank.assets").exists()
 
 
+def test_page_markers_are_default(tmp_path: Path) -> None:
+    pdf = make_pdf(tmp_path / "book.pdf", 2)
+    plain = Paths(pdf, tmp_path / "plain.md")
+    pipeline.convert(plain, Settings(preserve_pages=False))
+    assert PAGE_MARKER_PREFIX not in plain.output.read_text()
+
+    marked = Paths(pdf, tmp_path / "marked.md")
+    pipeline.convert(marked, Settings())
+    markdown = marked.output.read_text()
+    assert page_numbers(markdown) == [1, 2]
+    assert markdown.index("<!-- pdf-page: 1 -->") < markdown.index(
+        "Unique page marker 0001"
+    )
+    assert markdown.index("<!-- pdf-page: 2 -->") < markdown.index(
+        "Unique page marker 0002"
+    )
+
+
+def test_page_marker_on_blank_page(tmp_path: Path) -> None:
+    from reportlab.pdfgen import canvas
+
+    path = tmp_path / "blank.pdf"
+    document = canvas.Canvas(str(path), pagesize=(612, 792))
+    document.drawString(72, 720, "Unique page marker 0001.")
+    document.showPage()
+    document.showPage()
+    document.drawString(72, 720, "Unique page marker 0003.")
+    document.showPage()
+    document.save()
+    result = pipeline.convert(
+        Paths(path, tmp_path / "blank.md"), Settings(preserve_pages=True)
+    )
+    assert result.pages[1].blank
+    assert page_numbers((tmp_path / "blank.md").read_text()) == [1, 2, 3]
+
+
 def test_noncontiguous_native_pages(tmp_path: Path) -> None:
     pdf = make_pdf(tmp_path / "book.pdf", 9)
     paths = Paths(pdf, tmp_path / "selected.md")
     progress: list[tuple[int, int, str]] = []
     report = pipeline.convert(
         paths,
-        Settings(pages="9,3,1,7-9,3"),
+        Settings(pages="9,3,1,7-9,3", preserve_pages=True),
         write_report=True,
         progress=lambda *args: progress.append(args),
     )
@@ -306,6 +364,7 @@ def test_noncontiguous_native_pages(tmp_path: Path) -> None:
     assert [page.provenance[0].page for page in report.pages] == [1, 3, 7, 8, 9]
     assert [step[:2] for step in progress] == [(n, 5) for n in range(1, 6)]
     markdown = paths.output.read_text()
+    assert page_numbers(markdown) == [page.page for page in report.pages]
     for number in range(1, 10):
         assert markdown.count(f"Unique page marker {number:04d}") == (
             number in report.selected_pages
@@ -350,7 +409,7 @@ def test_split_order_provenance_and_assets(
     progress: list[tuple[int, int, str]] = []
     report = pipeline.convert(
         paths,
-        Settings(pages="4,2", split="always", quality=quality),
+        Settings(pages="4,2", split="always", quality=quality, preserve_pages=True),
         write_report=True,
         progress=lambda *args: progress.append(args),
     )
@@ -375,6 +434,7 @@ def test_split_order_provenance_and_assets(
     assert "Page 2 left" in extraction_progress[0][2]
     assert "Page 4 right" in extraction_progress[-1][2]
     markdown = paths.output.read_text()
+    assert page_markers(markdown) == [(page.page, page.half) for page in report.pages]
     assert [markdown.index(f"Half {n}.") for n in range(1, 5)] == sorted(
         markdown.index(f"Half {n}.") for n in range(1, 5)
     )
@@ -417,11 +477,12 @@ def test_resume_noncontiguous_selection(
     with pytest.raises(KeyboardInterrupt):
         pipeline.convert(paths, settings)
     checkpoint = json.loads(next(paths.work.glob("*/chunk-*.json")).read_text())
-    assert len(checkpoint["pages"]) == (16 if split == "always" else 8)
+    halves = 2 if split == "always" else 1
+    assert len(checkpoint["pages"]) == CHUNK_SIZE * halves
     assert not paths.output.exists()
     monkeypatch.setattr(Docling, "extract", extract)
     report = pipeline.convert(paths, settings)
-    assert report.resumed_pages == 8
+    assert report.resumed_pages == CHUNK_SIZE
     assert report.selected_pages == selection
     assert len(report.pages) == (18 if split == "always" else 9)
     assert len(fake_docling) == (2 if split == "always" else 9)
@@ -521,6 +582,8 @@ def test_blank_half_has_no_inference(
     assert report.pages[1].blank
     assert report.pages[1].engine == "none"
     assert not report.pages[1].attempts
+    markdown = (tmp_path / "output.md").read_text()
+    assert page_markers(markdown) == [(1, "left"), (1, "right")]
 
 
 def test_cli_page_options(tmp_path: Path) -> None:
@@ -530,6 +593,15 @@ def test_cli_page_options(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "[1/2] Page 1" in result.output
     assert "[2/2] Page 3" in result.output
+    markdown = pdf.with_suffix(".md").read_text()
+    assert page_numbers(markdown) == [1, 3]
+    plain = tmp_path / "plain.md"
+    result = runner.invoke(
+        app,
+        [str(pdf), "--pages", "3,1", "--no-preserve-pages", "-o", str(plain)],
+    )
+    assert result.exit_code == 0, result.output
+    assert PAGE_MARKER_PREFIX not in plain.read_text()
     assert "--pages" in runner.invoke(app, [str(pdf), "--pages", "4"]).output
     assert runner.invoke(app, [str(pdf), "--split", "bad"]).exit_code == 2
     conflict = runner.invoke(
