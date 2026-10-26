@@ -250,6 +250,39 @@ def test_needs_review_after_warning_limit(
     assert summary["needs_review"] is True
 
 
+def test_handoff_paths_are_absolute_inside_root(tmp_path: Path) -> None:
+    root = tmp_path.resolve()
+    docs = tmp_path / "my docs"
+    docs.mkdir()
+    make_pdf(docs / "my paper.pdf")
+    server = mcp_server.create_server(tmp_path)
+    summary = asyncio.run(
+        call(server, "convert_pdf", {"input_pdf": "my docs/my paper.pdf"})
+    )
+    saved = asyncio.run(
+        call(
+            server,
+            "save_tts_markdown",
+            {
+                "conversion_id": summary["conversion_id"],
+                "markdown": "Reviewed text.\n",
+            },
+        )
+    )
+    paths = {
+        "input_pdf": summary["input_pdf"],
+        "output_markdown": summary["output_markdown"],
+        "report_json": summary["report_json"],
+        "tts_markdown": saved["output_markdown"],
+    }
+    for name, value in paths.items():
+        assert Path(value).is_absolute(), name
+        assert Path(value).is_relative_to(root), name
+        assert "my docs" in value, name
+    assert Path(paths["output_markdown"]).name == "my paper.md"
+    assert Path(paths["tts_markdown"]).name == "my paper.tts.md"
+
+
 def test_unicode_pagination(
     pdf: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

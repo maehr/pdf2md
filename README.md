@@ -285,6 +285,54 @@ Long conversions remain synchronous tool calls.
 Client timeouts do not guarantee cancellation.
 This release provides no background tasks or progress notifications.
 
+### Hand off to simple-tts
+
+Use `pdf2md` and `simple-tts` with one shared workspace directory.
+Run both servers on the same machine.
+Replace each placeholder with an absolute path.
+
+```json
+{
+  "mcpServers": {
+    "pdf2md": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/absolute/path/to/pdf2md",
+        "--locked",
+        "--extra",
+        "mcp",
+        "pdf2md-mcp"
+      ],
+      "env": {
+        "PDF2MD_MCP_ROOT": "/absolute/path/to/workspace"
+      }
+    },
+    "simple-tts": {
+      "command": "/absolute/path/to/venv/bin/simple-tts",
+      "args": ["mcp", "--workspace", "/absolute/path/to/workspace"]
+    }
+  }
+}
+```
+
+The `simple-tts` executable must use an environment that contains `simple-tts[mcp]`.
+See the [simple-tts installation guide](https://github.com/maehr/simple-tts#installation) for setup.
+See [Client configuration](#client-configuration) for the optional `HF_HUB_OFFLINE` setting.
+
+Use this recipe to create audio from a PDF:
+
+1. Call `convert_pdf(input_pdf="papers/my paper.pdf")`.
+2. If `needs_review` is true, review the text with `read_markdown`.
+3. If `needs_review` is true, save the reviewed text with `save_tts_markdown`.
+4. Call `start_conversion(input_file=<path>, format="m4b")`, where `<path>` is the latest `output_markdown`.
+5. Poll `get_conversion(job_id)` until the job finishes.
+
+Paths are local to the machine that runs the servers.
+A client on another machine cannot open these paths.
+Pass the paths between the servers, not the file content.
+
 ## Engine selection
 
 Fast mode uses native extraction for pages with reliable text and simple layouts.

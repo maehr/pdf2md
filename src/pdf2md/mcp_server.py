@@ -334,6 +334,7 @@ def create_server(root: Path) -> "FastMCP":
         """Convert one local PDF and write Markdown, assets, and a JSON report.
 
         Relative paths start at the configured root.
+        Returned paths are local to the server machine.
         preserve_pages=True inserts silent physical page markers.
         overwrite=True can replace existing output files.
         Use this tool for Markdown and for narration.
@@ -443,6 +444,7 @@ def create_server(root: Path) -> "FastMCP":
         """Save agent-reviewed Markdown as <name>.tts.md next to the extraction.
 
         The tool never changes the extracted Markdown.
+        Returned paths are local to the server machine.
         overwrite=True can replace an existing TTS copy.
         The server does not rewrite, summarize, or normalize the text.
         """
