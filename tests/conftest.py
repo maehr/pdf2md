@@ -1,15 +1,31 @@
 """Small PDFs for local, repeatable tests."""
 
+import re
 from pathlib import Path
 
 import pytest
 from reportlab.pdfgen import canvas
+
+PAGE_MARKER = re.compile(r"<!-- pdf-page: (\d+)(?:; half: (left|right))? -->")
+PAGE_MARKER_PREFIX = "<!-- pdf-page:"
 
 TEXT = (
     "This research paper describes a local document conversion method. "
     "The method preserves the original text without summary or invention. "
     "Readers can check each extracted sentence against the source document."
 )
+
+
+def page_markers(markdown: str) -> list[tuple[int, str | None]]:
+    """Return physical page and half pairs from page markers, in order."""
+    return [
+        (int(number), half or None) for number, half in PAGE_MARKER.findall(markdown)
+    ]
+
+
+def page_numbers(markdown: str) -> list[int]:
+    """Return physical page numbers from page markers, in order."""
+    return [number for number, _ in page_markers(markdown)]
 
 
 def make_pdf(path: Path, pages: int = 1) -> Path:

@@ -10,11 +10,12 @@ from threading import Event
 from typing import Any
 
 import pytest
-from conftest import make_pdf
+from conftest import make_pdf, page_numbers
 
 from pdf2md import __version__, mcp_server
+from pdf2md.core import page_marker
 from pdf2md.engines import Inspector
-from pdf2md.models import PageInfo, Paths, Settings
+from pdf2md.models import CHUNK_SIZE, PageInfo, Paths, Settings
 
 fastmcp = pytest.importorskip("fastmcp", reason="Install the optional mcp extra.")
 
@@ -104,7 +105,7 @@ def test_conversion_and_read(pdf: Path, tmp_path: Path, custom: bool) -> None:
         call(server, "read_markdown", {"conversion_id": summary["conversion_id"]})
     )
     assert "Unique page marker 0001" in chunk["markdown"]
-    assert "<!-- pdf-page: 1 -->" in chunk["markdown"]
+    assert page_numbers(chunk["markdown"]) == [1]
     assert chunk["markdown"].encode() == output.read_bytes()
     assert chunk["next_offset_bytes"] == output.stat().st_size
     assert chunk["eof"]
@@ -628,7 +629,7 @@ def test_private_registry_and_empty_markdown(tmp_path: Path) -> None:
             {"conversion_id": marked["conversion_id"]},
         )
     )
-    assert marked_chunk["markdown"] == "<!-- pdf-page: 1 -->\n\n"
+    assert marked_chunk["markdown"] == page_marker(1) + "\n\n"
     report = json.loads(Path(marked["report_json"]).read_text())
     assert report["settings"]["preserve_pages"] is True
     assert "Unknown or expired" in asyncio.run(
@@ -867,7 +868,7 @@ def test_checkpoint_only_resume(
     assert not paths.output.exists()
     monkeypatch.setattr(Inspector, "inspect", original)
     summary = asyncio.run(call(server, "convert_pdf", arguments))
-    assert summary["resumed_pages"] == 8
+    assert summary["resumed_pages"] == CHUNK_SIZE
     assert not paths.work.exists()
 
 
