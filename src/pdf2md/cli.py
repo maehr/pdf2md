@@ -70,7 +70,7 @@ def main(
         typer.echo(f"Warnings: {len(warnings)}. Verify the source pages.", err=True)
         for warning in dict.fromkeys(warnings):
             typer.echo(f"  {warning}", err=True)
-    typer.echo(result.output)
+    typer.echo(Path(result.output).resolve())
 
 
 if __name__ == "__main__":

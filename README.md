@@ -10,6 +10,37 @@ Markdown includes silent physical page markers by default.
 
 See the [changelog](CHANGELOG.md) for release notes.
 
+## For coding agents
+
+Call the command line interface (CLI) to convert a PDF.
+Do not import `pdf2md` modules.
+Do not write a PDF parser.
+Do not add OCR.
+
+Run these two commands in order:
+
+```sh
+pdf2md "my paper.pdf"
+simple-tts convert "my paper.md" --format m4b --yes
+```
+
+In a checkout of this repository, run `uv sync --locked` once.
+Then use `uv run --locked pdf2md "my paper.pdf"` instead of `pdf2md`.
+
+The CLI follows this contract:
+
+- Convert one PDF for each run.
+- Stdout contains the absolute output path and one newline only.
+- Stderr contains progress, warnings, and errors.
+- Exit code 0 means success.
+- Exit code 1 means a conversion error.
+- Exit code 2 means a usage error.
+- Exit code 130 means an interrupt.
+- The default output is `my paper.md`, beside `my paper.pdf`.
+- Page markers are HTML comments. `simple-tts` does not speak them.
+
+Install `simple-tts` from <https://github.com/maehr/simple-tts>.
+
 ## Requirements
 
 - A Mac with Apple Silicon and macOS.

@@ -609,3 +609,22 @@ def test_cli_page_options(tmp_path: Path) -> None:
     )
     assert conflict.exit_code == 1
     assert "cannot process" in conflict.output
+
+
+def test_cli_output_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pdf = make_pdf(tmp_path / "my paper.pdf")
+    output = pdf.with_suffix(".md")
+    runner = CliRunner()
+    result = runner.invoke(app, [str(pdf)])
+    assert result.exit_code == 0, result.output
+    assert result.stdout == f"{output}\n"
+    assert "[1/1]" in result.stderr
+    assert "[1/1]" not in result.stdout
+    monkeypatch.chdir(tmp_path)
+    relative = runner.invoke(app, ["my paper.pdf"])
+    assert relative.exit_code == 0, relative.output
+    assert relative.stdout == f"{output}\n"
+    missing = runner.invoke(app, [str(tmp_path / "missing.pdf")])
+    assert missing.exit_code == 1
+    assert missing.stdout == ""
+    assert "Error:" in missing.stderr
