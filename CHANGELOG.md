@@ -19,6 +19,10 @@ This file records changes in each release.
 
 ### Changed
 
+- FastMCP is 4.1.4, and ty is 0.0.92.
+- Locked transitive dependencies use their current compatible versions.
+- The CodeQL workflow uses `github/codeql-action` v4.39.1.
+- CI no longer passes an unsupported `setup-uv` input.
 - The JSON report uses schema version 2.
 - `read_markdown` accepts sections up to 65,536 UTF-8 bytes.
 - Provenance boxes and crop rectangles use the top-left page origin.
