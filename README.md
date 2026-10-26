@@ -111,7 +111,7 @@ It prints the output path to standard output after success.
 
 ## Local MCP server
 
-Install the optional FastMCP 4.1.3 server:
+Install the optional FastMCP 4.1.4 server:
 
 ```sh
 uv sync --locked --extra mcp
