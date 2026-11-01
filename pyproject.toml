@@ -15,7 +15,7 @@ dependencies = [
     "pdf-inspector==1.25.2",
     "pydantic==2.14.1",
     "pypdfium2==5.14.0",
-    "typer==0.26.8",
+    "typer==0.27.3",
 ]
 
 [project.optional-dependencies]
